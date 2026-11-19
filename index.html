@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Lyrics for the car</title>
+<style>
+  :root { --fs: 44px; --accent: #1ed760; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #bg { position: fixed; inset: -60px; background-size: cover; background-position: center;
+    filter: blur(60px) brightness(.35) saturate(1.3); transition: background-image .8s; z-index: 0; }
+  #app { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 20px; padding: 18px 28px; }
+  #art { width: 84px; height: 84px; border-radius: 10px; background: #222; object-fit: cover; flex: none; }
+  #meta { flex: 1; min-width: 0; }
+  #title { font-size: 30px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #artist { font-size: 22px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btns { display: flex; gap: 10px; flex: none; }
+  button { background: rgba(255,255,255,.12); color: #fff; border: 0; border-radius: 14px;
+    min-width: 64px; height: 64px; font-size: 26px; padding: 0 16px; cursor: pointer; }
+  button:active { background: rgba(255,255,255,.28); }
+  #lyrics { flex: 1; overflow-y: auto; padding: 30vh 48px 45vh; scroll-behavior: smooth;
+    scrollbar-width: none; -webkit-mask-image: linear-gradient(transparent, #000 15%, #000 80%, transparent); }
+  #lyrics::-webkit-scrollbar { display: none; }
+  .line { font-size: var(--fs); font-weight: 800; line-height: 1.3; margin: 0 0 .55em;
+    opacity: .35; transition: opacity .3s, transform .3s; transform-origin: left center; cursor: pointer; }
+  .line.past { opacity: .5; }
+  .line.active { opacity: 1; transform: scale(1.04); }
+  .plain .line { opacity: .9; cursor: default; }
+  .msg { font-size: 34px; opacity: .7; text-align: center; margin-top: 10vh; }
+  #bar { height: 5px; background: rgba(255,255,255,.15); }
+  #bar > div { height: 100%; width: 0; background: var(--accent); }
+  footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 28px 20px; }
+  footer .group { display: flex; gap: 10px; align-items: center; }
+  #offsetLabel { font-size: 20px; opacity: .8; min-width: 110px; text-align: center; }
+  #setup { max-width: 760px; margin: 8vh auto; padding: 0 32px; font-size: 22px; line-height: 1.5; }
+  #setup h1 { font-size: 40px; }
+  #setup input { width: 100%; font-size: 24px; padding: 16px; border-radius: 12px; border: 0; margin: 8px 0 18px; }
+  #setup code { background: rgba(255,255,255,.12); padding: 2px 8px; border-radius: 6px; word-break: break-all; }
+  .primary { background: var(--accent); color: #000; font-weight: 700; width: 100%; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+
+<div id="setup" class="hidden">
+  <h1>Lyrics for the car</h1>
+  <p>One-time setup:</p>
+  <ol>
+    <li>Go to <code>developer.spotify.com/dashboard</code> and create an app (any name).</li>
+    <li>Add this exact Redirect URI:<br><code id="redirectUri"></code></li>
+    <li>Tick "Web API" and save, then paste the app's <b>Client ID</b> below.</li>
+  </ol>
+  <input id="clientId" placeholder="Spotify Client ID" autocomplete="off" spellcheck="false">
+  <button class="primary" id="connect">Connect Spotify</button>
+  <p id="setupErr" style="color:#ff7b7b"></p>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <img id="art" alt="">
+    <div id="meta"><div id="title">Nothing playing</div><div id="artist">Start a song on Spotify</div></div>
+    <div class="btns">
+      <button id="prev" title="Previous">⏮</button>
+      <button id="play" title="Play/Pause">⏯</button>
+      <button id="next" title="Next">⏭</button>
+    </div>
+  </header>
+  <div id="bar"><div></div></div>
+  <div id="lyrics"><div class="msg">Waiting for Spotify…</div></div>
+  <footer>
+    <div class="group">
+      <button id="smaller" title="Smaller text">A−</button>
+      <button id="bigger" title="Bigger text">A+</button>
+    </div>
+    <div class="group">
+      <button id="earlier" title="Lyrics earlier">−0.5s</button>
+      <span id="offsetLabel">sync 0.0s</span>
+      <button id="later" title="Lyrics later">+0.5s</button>
+    </div>
+    <div class="group">
+      <button id="follow" title="Jump back to current line">⤓</button>
+      <button id="logout" title="Disconnect">⏻</button>
+    </div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const SCOPES = 'user-read-currently-playing user-read-playback-state user-modify-playback-state';
+  const REDIRECT = location.origin + location.pathname;
+  const $ = id => document.getElementById(id);
+  const store = {
+    get: k => localStorage.getItem('tl_' + k),
+    set: (k, v) => localStorage.setItem('tl_' + k, v),
+    del: k => localStorage.removeItem('tl_' + k),
+  };
+
+  // ---------- Spotify auth (PKCE, no server needed) ----------
+  const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const randStr = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
+
+  async function startLogin(clientId) {
+    const verifier = randStr(64);
+    const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+    store.set('client_id', clientId);
+    store.set('verifier', verifier);
+    const p = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: REDIRECT,
+      code_challenge_method: 'S256', code_challenge: challenge, scope: SCOPES });
+    location.href = 'https://accounts.spotify.com/authorize?' + p;
+  }
+
+  async function tokenRequest(params) {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: store.get('client_id'), ...params }) });
+    if (!r.ok) throw new Error('Spotify login failed (' + r.status + ')');
+    const t = await r.json();
+    store.set('access', t.access_token);
+    store.set('expires', String(Date.now() + (t.expires_in - 60) * 1000));
+    if (t.refresh_token) store.set('refresh', t.refresh_token);
+  }
+
+  async function accessToken() {
+    if (Date.now() > Number(store.get('expires') || 0)) {
+      await tokenRequest({ grant_type: 'refresh_token', refresh_token: store.get('refresh') });
+    }
+    return store.get('access');
+  }
+
+  async function spotify(path, method = 'GET') {
+    const r = await fetch('https://api.spotify.com/v1' + path, { method,
+      headers: { Authorization: 'Bearer ' + await accessToken() } });
+    if (r.status === 401) { store.set('expires', '0'); return null; }
+    if (r.status === 204 || method !== 'GET') return null;
+    return r.ok ? r.json() : null;
+  }
+
+  // ---------- Lyrics (LRCLIB, fetched live) ----------
+  const lyricCache = new Map();
+  function parseLRC(text) {
+    const out = [];
+    for (const raw of text.split('\n')) {
+      const tags = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+      if (!tags.length) continue;
+      const words = raw.replace(/\[[^\]]*\]/g, '').trim();
+      for (const m of tags) out.push({ t: (Number(m[1]) * 60 + Number(m[2])) * 1000, text: words || '♪' });
+    }
+    return out.sort((a, b) => a.t - b.t);
+  }
+  async function fetchLyrics(track) {
+    if (lyricCache.has(track.id)) return lyricCache.get(track.id);
+    const artist = track.artists[0]?.name || '';
+    const base = 'https://lrclib.net/api/';
+    let hit = null;
+    try {
+      const r = await fetch(base + 'get?' + new URLSearchParams({ track_name: track.name, artist_name: artist,
+        album_name: track.album?.name || '', duration: Math.round(track.duration_ms / 1000) }));
+      if (r.ok) hit = await r.json();
+      if (!hit || (!hit.syncedLyrics && !hit.plainLyrics && !hit.instrumental)) {
+        const s = await fetch(base + 'search?' + new URLSearchParams({ track_name: track.name, artist_name: artist }));
+        const list = s.ok ? await s.json() : [];
+        const dur = track.duration_ms / 1000;
+        list.sort((a, b) => (!!b.syncedLyrics - !!a.syncedLyrics) || Math.abs(a.duration - dur) - Math.abs(b.duration - dur));
+        hit = list.find(x => Math.abs(x.duration - dur) < 8) || list[0] || null;
+      }
+    } catch (e) { return { error: true }; }
+    const res = !hit ? { none: true }
+      : hit.instrumental ? { instrumental: true }
+      : hit.syncedLyrics ? { synced: parseLRC(hit.syncedLyrics) }
+      : hit.plainLyrics ? { plain: hit.plainLyrics.split('\n') }
+      : { none: true };
+    lyricCache.set(track.id, res);
+    return res;
+  }
+
+  // ---------- UI state ----------
+  let fs = Number(store.get('fs') || 44);
+  let offset = Number(store.get('offset') || 0);
+  let state = { trackId: null, progress: 0, at: 0, playing: false, duration: 1 };
+  let lines = null, lineEls = [], activeIdx = -1, follow = true, lastAutoScroll = 0;
+
+  const applyFs = () => { document.documentElement.style.setProperty('--fs', fs + 'px'); store.set('fs', fs); };
+  const applyOffset = () => { $('offsetLabel').textContent = 'sync ' + (offset > 0 ? '+' : '') + (offset / 1000).toFixed(1) + 's'; store.set('offset', offset); };
+
+  function showMsg(text) {
+    lines = null; lineEls = []; activeIdx = -1;
+    $('lyrics').className = '';
+    $('lyrics').innerHTML = '';
+    const d = document.createElement('div'); d.className = 'msg'; d.textContent = text;
+    $('lyrics').appendChild(d);
+  }
+
+  function renderLyrics(res) {
+    const box = $('lyrics'); box.innerHTML = ''; activeIdx = -1; lineEls = [];
+    if (res.error) return showMsg('Couldn’t reach the lyrics service.');
+    if (res.instrumental) return showMsg('♪ Instrumental ♪');
+    if (res.none) return showMsg('No lyrics found for this song.');
+    const arr = res.synced || res.plain.map(text => ({ text }));
+    box.className = res.synced ? '' : 'plain';
+    lines = res.synced || null;
+    for (const l of arr) {
+      const d = document.createElement('div');
+      d.className = 'line'; d.textContent = l.text || ' ';
+      if (res.synced) d.onclick = () => seekTo(l.t);
+      box.appendChild(d); lineEls.push(d);
+    }
+    box.scrollTop = 0; follow = true;
+  }
+
+  async function seekTo(ms) {
+    state.progress = Math.max(0, ms - offset); state.at = performance.now(); follow = true;
+    await spotify('/me/player/seek?position_ms=' + Math.round(state.progress), 'PUT');
+  }
+
+  function tick() {
+    const pos = state.progress + (state.playing ? performance.now() - state.at : 0);
+    $('bar').firstElementChild.style.width = Math.min(100, pos / state.duration * 100) + '%';
+    if (lines && lines.length) {
+      const p = pos + offset;
+      let i = -1;
+      for (let k = 0; k < lines.length && lines[k].t <= p; k++) i = k;
+      if (i !== activeIdx) {
+        lineEls.forEach((el, k) => { el.classList.toggle('active', k === i); el.classList.toggle('past', k < i); });
+        activeIdx = i;
+        if (follow && i >= 0) {
+          const el = lineEls[i], box = $('lyrics');
+          lastAutoScroll = performance.now();
+          box.scrollTop = el.offsetTop - box.clientHeight * 0.35;
+        }
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  async function poll() {
+    try {
+      const d = await spotify('/me/player/currently-playing');
+      const t = d && d.item;
+      if (!t || d.currently_playing_type !== 'track') {
+        if (state.trackId !== null) { state.trackId = null; $('title').textContent = 'Nothing playing';
+          $('artist').textContent = 'Start a song on Spotify'; showMsg('Waiting for Spotify…'); }
+      } else {
+        state.progress = d.progress_ms; state.at = performance.now();
+        state.playing = d.is_playing; state.duration = t.duration_ms;
+        if (t.id !== state.trackId) {
+          state.trackId = t.id;
+          $('title').textContent = t.name;
+          $('artist').textContent = t.artists.map(a => a.name).join(', ');
+          const img = t.album?.images?.[0]?.url || '';
+          $('art').src = img; $('art').style.visibility = img ? 'visible' : 'hidden'; $('bg').style.backgroundImage = img ? `url("${img}")` : '';
+          showMsg('Loading lyrics…');
+          const id = t.id, res = await fetchLyrics(t);
+          if (id === state.trackId) renderLyrics(res);
+        }
+      }
+    } catch (e) { /* network blip, try again next poll */ }
+    setTimeout(poll, document.hidden ? 5000 : 1000);
+  }
+
+  function bind() {
+    $('smaller').onclick = () => { fs = Math.max(24, fs - 4); applyFs(); };
+    $('bigger').onclick = () => { fs = Math.min(96, fs + 4); applyFs(); };
+    $('earlier').onclick = () => { offset -= 500; applyOffset(); activeIdx = -2; };
+    $('later').onclick = () => { offset += 500; applyOffset(); activeIdx = -2; };
+    $('follow').onclick = () => { follow = true; activeIdx = -2; };
+    $('play').onclick = () => { spotify(state.playing ? '/me/player/pause' : '/me/player/play', 'PUT');
+      state.progress += state.playing ? performance.now() - state.at : 0; state.at = performance.now(); state.playing = !state.playing; };
+    $('next').onclick = () => spotify('/me/player/next', 'POST');
+    $('prev').onclick = () => spotify('/me/player/previous', 'POST');
+    $('logout').onclick = () => { ['access', 'refresh', 'expires'].forEach(store.del); location.reload(); };
+    // Manual scroll pauses auto-follow; the ⤓ button resumes it.
+    const stopFollow = () => { if (performance.now() - lastAutoScroll > 700) follow = false; };
+    $('lyrics').addEventListener('wheel', stopFollow);
+    $('lyrics').addEventListener('touchmove', stopFollow);
+  }
+
+  async function main() {
+    $('redirectUri').textContent = REDIRECT;
+    $('clientId').value = store.get('client_id') || '';
+    $('connect').onclick = () => { const id = $('clientId').value.trim(); if (id) startLogin(id); };
+
+    const q = new URLSearchParams(location.search);
+    if (q.get('code')) {
+      try {
+        await tokenRequest({ grant_type: 'authorization_code', code: q.get('code'),
+          redirect_uri: REDIRECT, code_verifier: store.get('verifier') });
+      } catch (e) { $('setupErr').textContent = e.message; }
+      history.replaceState(null, '', REDIRECT);
+    } else if (q.get('error')) {
+      $('setupErr').textContent = 'Spotify said: ' + q.get('error');
+      history.replaceState(null, '', REDIRECT);
+    }
+
+    if (!store.get('refresh')) { $('setup').classList.remove('hidden'); return; }
+    $('app').classList.remove('hidden');
+    applyFs(); applyOffset(); bind();
+    poll(); requestAnimationFrame(tick);
+  }
+  main();
+})();
+</script>
+</body>
+</html>
