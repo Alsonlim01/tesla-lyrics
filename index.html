@@ -25,9 +25,11 @@
     scrollbar-width: none; -webkit-mask-image: linear-gradient(transparent, #000 15%, #000 80%, transparent); }
   #lyrics::-webkit-scrollbar { display: none; }
   .line { font-size: var(--fs); font-weight: 800; line-height: 1.3; margin: 0 0 .55em;
-    opacity: .35; transition: opacity .3s, transform .3s; transform-origin: left center; cursor: pointer; }
+    opacity: .35; transition: opacity .35s, transform .45s cubic-bezier(.2,.8,.2,1);
+    transform-origin: left center; cursor: pointer;
+    max-width: 88%; /* leaves room so the enlarged line never runs off the right edge */ }
   .line.past { opacity: .5; }
-  .line.active { opacity: 1; transform: scale(1.04); }
+  .line.active { opacity: 1; transform: scale(1.12); }
   .plain .line { opacity: .9; cursor: default; }
   .msg { font-size: 34px; opacity: .7; text-align: center; margin-top: 10vh; }
   #bar { height: 5px; background: rgba(255,255,255,.15); }
