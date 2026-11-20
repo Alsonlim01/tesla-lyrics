@@ -109,8 +109,10 @@
     const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
     store.set('client_id', clientId);
     store.set('verifier', verifier);
+    const state = randStr(16);
+    store.set('state', state);
     const p = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: REDIRECT,
-      code_challenge_method: 'S256', code_challenge: challenge, scope: SCOPES });
+      code_challenge_method: 'S256', code_challenge: challenge, scope: SCOPES, state });
     location.href = 'https://accounts.spotify.com/authorize?' + p;
   }
 
@@ -279,13 +281,32 @@
     $('lyrics').addEventListener('touchmove', stopFollow);
   }
 
+  // ?demo: shows the layout with placeholder lines, no Spotify login needed.
+  function startDemo() {
+    $('app').classList.remove('hidden');
+    applyFs(); applyOffset(); bind();
+    $('title').textContent = 'Demo track'; $('artist').textContent = 'Tesla Lyrics';
+    $('art').style.visibility = 'hidden';
+    const words = ['This is a demo of the lyrics screen', 'Each line lights up in time', 'Then scrolls up out of the way',
+      'Use the sync buttons if words run early', 'Or late compared to the song', 'Connect Spotify to see real songs'];
+    const synced = words.map((text, i) => ({ t: 1000 + i * 2500, text }));
+    const loop = () => { state = { trackId: 'demo', progress: 0, at: performance.now(), playing: true, duration: 17000 };
+      renderLyrics({ synced }); };
+    loop(); setInterval(loop, 17000);
+    requestAnimationFrame(tick);
+  }
+
   async function main() {
     $('redirectUri').textContent = REDIRECT;
     $('clientId').value = store.get('client_id') || '';
     $('connect').onclick = () => { const id = $('clientId').value.trim(); if (id) startLogin(id); };
 
     const q = new URLSearchParams(location.search);
-    if (q.get('code')) {
+    if (q.has('demo')) return startDemo();
+    if (q.get('code') && q.get('state') !== store.get('state')) {
+      $('setupErr').textContent = 'Login check failed, please tap Connect again.';
+      history.replaceState(null, '', REDIRECT);
+    } else if (q.get('code')) {
       try {
         await tokenRequest({ grant_type: 'authorization_code', code: q.get('code'),
           redirect_uri: REDIRECT, code_verifier: store.get('verifier') });

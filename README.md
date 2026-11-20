@@ -28,3 +28,4 @@ Spotify login needs a real https address.
 - **A− / A+**: text size. **±0.5s**: fix lyrics that run early or late. Both are remembered.
 - Scrolling manually pauses auto-scroll; **⤓** resumes it.
 - Previous / play-pause / next buttons control Spotify playback (needs Spotify Premium).
+- Add `?demo` to the address to preview the screen without logging in.
