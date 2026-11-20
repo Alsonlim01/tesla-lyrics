@@ -113,14 +113,23 @@
 
 <div id="setup" class="hidden">
   <h1>Lyrics for the car</h1>
-  <p>One-time setup:</p>
-  <ol>
-    <li>Go to <code>developer.spotify.com/dashboard</code> and create an app (any name).</li>
-    <li>Add this exact Redirect URI:<br><code id="redirectUri"></code></li>
-    <li>Tick "Web API" and save, then paste the app's <b>Client ID</b> below.</li>
-  </ol>
-  <input id="clientId" placeholder="Spotify Client ID" autocomplete="off" spellcheck="false">
-  <button class="primary" id="connect">Connect Spotify</button>
+  <!-- Quick setup: the Spotify app is already known, so it's one tap. -->
+  <div id="quickSetup" class="hidden">
+    <p>Connect your Spotify account to show synced lyrics for whatever is playing.</p>
+    <button class="primary" id="quickConnect" style="height:84px;font-size:30px">Connect Spotify</button>
+    <p><a href="#" id="showManual" style="color:#aaa;font-size:18px">Use a different Spotify app</a></p>
+  </div>
+  <!-- Manual setup: someone using their own Spotify developer app. -->
+  <div id="manualSetup" class="hidden">
+    <p>One-time setup:</p>
+    <ol>
+      <li>Go to <code>developer.spotify.com/dashboard</code> and create an app (any name).</li>
+      <li>Add this exact Redirect URI:<br><code id="redirectUri"></code></li>
+      <li>Tick "Web API" and save, then paste the app's <b>Client ID</b> below.</li>
+    </ol>
+    <input id="clientId" placeholder="Spotify Client ID" autocomplete="off" spellcheck="false">
+    <button class="primary" id="connect">Connect Spotify</button>
+  </div>
   <p id="setupErr" style="color:#ff7b7b"></p>
 </div>
 
@@ -929,12 +938,28 @@
     requestAnimationFrame(tick);
   }
 
+  // This site's own Spotify app. A Client ID isn't secret (it's sent in every login link), and the app
+  // only lets in accounts added under User Management, so it's safe to build in.
+  const DEFAULT_CLIENT_ID = 'd3559172d7824843ad9ed6a78b475f07';
+  const isClientId = s => /^[0-9a-f]{32}$/i.test(s || '');
+
   async function main() {
+    const q = new URLSearchParams(location.search);
+    // ?id=<client id> sets up a different Spotify app from a link.
+    if (isClientId(q.get('id'))) { store.set('client_id', q.get('id')); q.delete('id');
+      history.replaceState(null, '', REDIRECT + (q.toString() ? '?' + q : '')); }
+    const knownId = store.get('client_id') || DEFAULT_CLIENT_ID;
+
     $('redirectUri').textContent = REDIRECT;
     $('clientId').value = store.get('client_id') || '';
-    $('connect').onclick = () => { const id = $('clientId').value.trim(); if (id) startLogin(id); };
+    $('connect').onclick = () => {
+      const id = $('clientId').value.trim();
+      if (isClientId(id)) startLogin(id); else $('setupErr').textContent = 'That doesn’t look like a Client ID (32 letters and numbers).';
+    };
+    $('quickConnect').onclick = () => startLogin(knownId);
+    $('showManual').onclick = e => { e.preventDefault(); $('quickSetup').classList.add('hidden'); $('manualSetup').classList.remove('hidden'); };
+    $(isClientId(knownId) ? 'quickSetup' : 'manualSetup').classList.remove('hidden');
 
-    const q = new URLSearchParams(location.search);
     if (q.has('demo')) return startDemo();
     if (q.get('code') && q.get('state') !== store.get('state')) {
       $('setupErr').textContent = 'Login check failed, please tap Connect again.';

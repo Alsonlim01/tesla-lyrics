@@ -20,7 +20,7 @@ Spotify login needs a real https address.
 
 ### 3. Use it in the car
 1. Open `https://alsonlim01.github.io/tesla-lyrics/` in the Tesla browser.
-2. Paste the Client ID, tap **Connect**, and log in to Spotify.
+2. Tap **Connect Spotify**, log in to Spotify and tap **Agree** (the Client ID is built in; use "Use a different Spotify app" or `?id=<client id>` for your own).
 3. Play something on Spotify. The page picks it up automatically.
 
 ## Controls
