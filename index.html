@@ -138,7 +138,7 @@
 <div id="app" class="hidden">
   <header>
     <img id="art" alt="">
-    <div id="meta"><div id="title">Nothing playing</div><div id="artist">Start a song on Spotify</div><div id="vibe" class="hidden" title="Tap to change the style"></div></div>
+    <div id="meta"><div id="title">&nbsp;</div><div id="artist">&nbsp;</div><div id="vibe" class="hidden" title="Tap to change the style"></div></div>
     <div class="btns">
       <button id="prev" title="Previous">⏮</button>
       <button id="play" title="Play/Pause">⏯</button>
@@ -146,7 +146,7 @@
     </div>
   </header>
   <div id="bar"><div></div></div>
-  <div id="lyrics"><div class="msg">Waiting for Spotify…</div></div>
+  <div id="lyrics"><div class="loader" aria-label="Connecting to Spotify"><i></i><i></i><i></i><i></i></div></div>
   <footer>
     <div class="group">
       <button id="smaller" title="Smaller text">A−</button>
@@ -779,9 +779,12 @@
     const pos = state.progress + (state.playing ? performance.now() - state.at : 0);
     $('bar').firstElementChild.style.width = Math.min(100, pos / state.duration * 100) + '%';
     if (lines && lines.length) {
-      const p = pos + offset;
+      const p = pos + offset + LEAD;
       let i = -1;
       for (let k = 0; k < lines.length && lines[k].t <= p; k++) i = k;
+      // A small clock correction can nudge the position just before the current line again:
+      // keep the line lit instead of flicking back to the previous one.
+      if (i === activeIdx - 1 && activeIdx >= 0 && p > lines[activeIdx].t - 600) i = activeIdx;
       if (i !== activeIdx) {
         lineEls.forEach((el, k) => { el.classList.toggle('active', k === i); el.classList.toggle('past', k < i); });
         // Only react to the song moving forward one line (not to seeks or sync nudges).
@@ -868,26 +871,59 @@
     prefetchNext();
   }
 
+  // ---------- Keeping time with Spotify ----------
+  // Spotify reports where the song was when it answered, so add half the round trip (the answer's
+  // travel time). Small differences are eased in over a few polls instead of jumping, so the
+  // highlight never stutters; only real jumps (seeks, pauses, a slow first answer) snap straight away.
+  const LEAD = 150; // light each line a touch early: the pop animation takes a moment to read
+  let bestRtt = Infinity, nothingCount = 0;
+  const posNow = () => state.progress + (state.playing ? performance.now() - state.at : 0);
+  function syncClock(progressMs, playing, rtt, tDone) {
+    bestRtt = Math.min(bestRtt * 1.02 + 5, rtt); // slowly forgets, so a better network is noticed
+    const reported = progressMs + (playing ? rtt / 2 : 0);
+    const now = performance.now();
+    const est = reported + (playing ? now - tDone : 0);
+    const drift = est - posNow();
+    const slow = rtt > bestRtt * 2 + 250; // a sluggish answer is a less exact clock reading
+    if (playing !== state.playing || Math.abs(drift) > 1500 || state.trackId === null) {
+      state.progress = est; state.at = now; state.playing = playing;
+    } else if (!slow && Math.abs(drift) > 40) {
+      state.progress = posNow() + drift * 0.35; state.at = now; // ease towards Spotify's clock
+    }
+  }
+  function goIdle() {
+    state.trackId = null; switchToken++;
+    $('title').textContent = 'Nothing playing'; $('artist').textContent = 'Start a song on Spotify';
+    $('vibe').classList.add('hidden'); showMsg('Play a song on Spotify and the lyrics will appear here');
+  }
+
   let pollTimer = null, polling = false;
   async function poll() {
     if (polling) return;
     polling = true; clearTimeout(pollTimer);
     try {
-      const d = await spotify('/me/player/currently-playing');
+      const token = await accessToken(); // refresh first, so it isn't counted in the round trip
+      const t0 = performance.now();
+      const r = await fetch('https://api.spotify.com/v1/me/player/currently-playing', { headers: { Authorization: 'Bearer ' + token } });
+      const t1 = performance.now();
+      if (r.status === 401) store.set('expires', '0');
+      const d = r.status === 200 ? await r.json() : null;
       const t = d && d.item;
-      if (!t || d.currently_playing_type !== 'track') {
-        if (state.trackId !== null) { state.trackId = null; switchToken++; $('title').textContent = 'Nothing playing';
-          $('artist').textContent = 'Start a song on Spotify'; $('vibe').classList.add('hidden'); showMsg('Waiting for Spotify…'); }
-      } else {
+      if (r.status === 204 || (d && (!t || d.currently_playing_type !== 'track'))) {
+        // Spotify briefly says "nothing" between songs and while changing device: wait it out.
+        if (++nothingCount >= 4 && (state.trackId !== null || !$('lyrics').querySelector('.msg'))) goIdle();
+      } else if (t) {
+        nothingCount = 0;
         // Right after an on-page skip Spotify can still report the old song for a moment: don't bounce back.
         const settling = t.id !== state.trackId && performance.now() < skipGuardUntil;
         if (!settling) {
-          state.progress = d.progress_ms; state.at = performance.now();
-          state.playing = d.is_playing; state.duration = t.duration_ms;
-          if (t.id !== state.trackId) switchTrack(t);
+          state.duration = t.duration_ms;
+          if (t.id !== state.trackId) { state.progress = d.progress_ms + (d.is_playing ? (t1 - t0) / 2 : 0);
+            state.at = t1; state.playing = d.is_playing; switchTrack(t); }
+          else syncClock(d.progress_ms, d.is_playing, t1 - t0, t1);
         }
       }
-    } catch (e) { /* network blip, try again next poll */ }
+    } catch (e) { /* network blip (e.g. a tunnel): keep going on our own clock, try again next poll */ }
     polling = false;
     pollTimer = setTimeout(poll, document.hidden ? 5000 : 1000);
   }
