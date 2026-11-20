@@ -207,7 +207,14 @@
     const r = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ client_id: store.get('client_id'), ...params }) });
-    if (!r.ok) throw new Error('Spotify login failed (' + r.status + ')');
+    if (!r.ok) {
+      // A refused refresh means the saved login is no longer valid (revoked, or unused for a long time):
+      // go back to the Connect screen instead of waiting forever. Network blips don't land here.
+      if (params.grant_type === 'refresh_token' && (r.status === 400 || r.status === 401)) {
+        ['access', 'refresh', 'expires'].forEach(store.del); location.reload();
+      }
+      throw new Error('Spotify login failed (' + r.status + ')');
+    }
     const t = await r.json();
     store.set('access', t.access_token);
     store.set('expires', String(Date.now() + (t.expires_in - 60) * 1000));
@@ -1028,6 +1035,11 @@
     $('app').classList.remove('hidden');
     applyFs(); applyOffset(); bind();
     poll(); requestAnimationFrame(tick);
+    // Coming back to the browser (or the screen waking up): check what's playing straight away.
+    const wake = () => { if (!document.hidden) pollSoon(0); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('pageshow', wake);
+    window.addEventListener('focus', wake);
   }
   main();
 })();
