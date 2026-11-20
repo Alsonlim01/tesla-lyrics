@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Lyrics for the car</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root { --fs: 44px; --accent: #1ed760; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: #000; color: #fff;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
   /* Accent from the album cover; registered so it cross-fades when the song changes. */
   @property --accent { syntax: '<color>'; inherits: true; initial-value: #1ed760; }
   :root { transition: --accent 1.2s; }
@@ -20,15 +22,35 @@
   /* Background layers are decoration only: never let them catch taps meant for the page. */
   #bgArt, #shade, #fx { pointer-events: none; }
   #app { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 20px; padding: 18px 28px; }
-  #art { width: 84px; height: 84px; border-radius: 10px; background: #222; object-fit: cover; flex: none; }
-  #meta { flex: 1; min-width: 0; }
-  #title { font-size: 30px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #artist { font-size: 22px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .btns { display: flex; gap: 10px; flex: none; }
-  button { background: rgba(255,255,255,.12); color: #fff; border: 0; border-radius: 14px;
-    min-width: 64px; height: 64px; font-size: 26px; padding: 0 16px; cursor: pointer; }
-  button:active { background: rgba(255,255,255,.28); }
+  /* Frosted glass, faintly tinted with the album colour. */
+  .glass { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, rgba(255,255,255,.09)), rgba(255,255,255,.035));
+    -webkit-backdrop-filter: blur(26px) saturate(1.6); backdrop-filter: blur(26px) saturate(1.6);
+    border: 1px solid rgba(255,255,255,.11);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 18px 50px -12px rgba(0,0,0,.55); }
+  header { padding: 16px 20px 0; }
+  .card { display: grid; grid-template-columns: auto 1fr auto; grid-template-rows: 1fr auto; column-gap: 22px; row-gap: 10px;
+    align-items: center; padding: 14px 18px 14px 14px; border-radius: 26px; }
+  #art { grid-row: 1 / 3; width: 104px; height: 104px; border-radius: 16px; background: rgba(255,255,255,.06); object-fit: cover;
+    box-shadow: 0 10px 30px -6px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.08), 0 0 40px -10px var(--accent); }
+  #meta { min-width: 0; }
+  #title { font-size: 30px; font-weight: 800; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { display: flex; align-items: center; gap: 12px; min-width: 0; margin-top: 2px; }
+  #artist { font-size: 21px; font-weight: 500; color: rgba(255,255,255,.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Progress: thin track with a glowing head and the times either side. */
+  .progress { grid-column: 2 / 4; display: flex; align-items: center; gap: 14px; font-size: 15px; font-weight: 600;
+    color: rgba(255,255,255,.55); font-variant-numeric: tabular-nums; }
+  .btns { display: flex; align-items: center; gap: 8px; }
+  button { font: inherit; color: #fff; border: 0; background: none; cursor: pointer; padding: 0;
+    transition: transform .25s cubic-bezier(.2,.9,.3,1.3), background-color .2s, color .2s, opacity .2s; }
+  button:active { transform: scale(.9); }
+  button svg { width: 28px; height: 28px; display: block; fill: currentColor; }
+  .ic { width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center; color: rgba(255,255,255,.86); }
+  .ic:active { background: rgba(255,255,255,.12); }
+  #play { width: 78px; height: 78px; border-radius: 50%; display: grid; place-items: center; color: #0a0a0a;
+    background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--accent) 70%, #fff), var(--accent) 60%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 10px 30px -6px color-mix(in srgb, var(--accent) 70%, transparent); }
+  #play svg { width: 32px; height: 32px; }
+  #play .pause, #play.is-playing .play { display: none; } #play.is-playing .pause { display: block; }
   #lyrics { flex: 1; overflow-y: auto; padding: 30vh 48px 45vh; scroll-behavior: smooth;
     scrollbar-width: none; -webkit-mask-image: linear-gradient(transparent, #000 12%, #000 88%, transparent); }
   #lyrics::-webkit-scrollbar { display: none; }
@@ -61,8 +83,9 @@
   [data-vibe="hiphop"] .line.active { animation: punch .32s cubic-bezier(.2,.9,.3,1.1); }
   [data-vibe="chill"]  .line.active { animation: glide .8s ease-out; }
   [data-vibe="mellow"] .line.active { animation: bloom 1.2s cubic-bezier(.2,.7,.2,1); }
-  #vibe { display: inline-block; margin-top: 6px; font-size: 18px; padding: 3px 12px; border-radius: 999px;
-    background: rgba(255,255,255,.14); cursor: pointer; user-select: none; }
+  #vibe { flex: none; font-size: 14px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 5px 12px; border-radius: 999px;
+    color: color-mix(in srgb, var(--accent) 55%, #fff); background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); cursor: pointer; user-select: none; }
   /* Climax (final chorus): the current line gets bigger and takes on the vibe's look; the rest fades back. */
   body.climax .line.active { font-size: calc(var(--fs) * 1.7); }
   body.climax .line:not(.active) { opacity: .1; }
@@ -97,16 +120,37 @@
     animation: eq 0.9s ease-in-out infinite; }
   .loader i:nth-child(2) { animation-delay: -.3s; } .loader i:nth-child(3) { animation-delay: -.6s; } .loader i:nth-child(4) { animation-delay: -.15s; }
   @keyframes eq { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
-  #bar { height: 5px; background: rgba(255,255,255,.15); }
-  #bar > div { height: 100%; width: 0; background: var(--accent); }
-  footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 28px 20px; }
-  footer .group { display: flex; gap: 10px; align-items: center; }
-  #offsetLabel { font-size: 20px; opacity: .8; min-width: 110px; text-align: center; }
+  #bar { flex: 1; height: 5px; border-radius: 99px; background: rgba(255,255,255,.14); }
+  #bar > div { position: relative; height: 100%; width: 0; border-radius: inherit;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); }
+  #bar > div::after { content: ''; position: absolute; right: -6px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent), 0 0 16px var(--accent); }
+  /* Bottom controls: three floating glass pills. */
+  footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 20px 18px; }
+  .pill { display: flex; align-items: center; gap: 2px; padding: 5px; border-radius: 999px; }
+  .pill .ic { width: 58px; height: 58px; }
+  .pill .ic svg { width: 24px; height: 24px; }
+  .aa { font-weight: 800; letter-spacing: -.02em; }
+  .aa.s { font-size: 17px; } .aa.l { font-size: 27px; }
+  .syncval { min-width: 104px; text-align: center; line-height: 1.05; }
+  .syncval small { display: block; font-size: 11px; font-weight: 700; letter-spacing: .16em; color: rgba(255,255,255,.45); }
+  #offsetLabel { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; transition: color .3s; }
+  #offsetLabel.on { color: color-mix(in srgb, var(--accent) 60%, #fff); }
+  /* "Back to the current line" appears only after you scroll away. */
+  #follow { position: absolute; left: 50%; bottom: 100px; z-index: 3; display: flex; align-items: center; gap: 10px;
+    height: 56px; padding: 0 24px 0 18px; border-radius: 999px; font-size: 18px; font-weight: 700;
+    transform: translate(-50%, 16px) scale(.96); opacity: 0; pointer-events: none; }
+  #follow svg { width: 22px; height: 22px; }
+  #follow.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+  #follow.show:active { transform: translate(-50%, 0) scale(.94); }
   #setup { position: relative; z-index: 2; max-width: 760px; margin: 8vh auto; padding: 0 32px; font-size: 22px; line-height: 1.5; }
   #setup h1 { font-size: 40px; }
   #setup input { width: 100%; font-size: 24px; padding: 16px; border-radius: 12px; border: 0; margin: 8px 0 18px; }
   #setup code { background: rgba(255,255,255,.12); padding: 2px 8px; border-radius: 6px; word-break: break-all; }
-  .primary { background: var(--accent); color: #000; font-weight: 700; width: 100%; }
+  .primary { width: 100%; height: 72px; border-radius: 999px; font-size: 24px; font-weight: 800; color: #0a0a0a;
+    background: radial-gradient(120% 140% at 30% 0%, color-mix(in srgb, var(--accent) 65%, #fff), var(--accent) 65%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 14px 40px -10px color-mix(in srgb, var(--accent) 75%, transparent); }
+  .primary:disabled { opacity: .6; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -137,29 +181,31 @@
 
 <div id="app" class="hidden">
   <header>
-    <img id="art" alt="">
-    <div id="meta"><div id="title">&nbsp;</div><div id="artist">&nbsp;</div><div id="vibe" class="hidden" title="Tap to change the style"></div></div>
-    <div class="btns">
-      <button id="prev" title="Previous">⏮</button>
-      <button id="play" title="Play/Pause">⏯</button>
-      <button id="next" title="Next">⏭</button>
+    <div class="card glass">
+      <img id="art" alt="">
+      <div id="meta"><div id="title">&nbsp;</div><div class="sub"><div id="artist">&nbsp;</div><div id="vibe" class="hidden" title="Tap to change the style"></div></div></div>
+      <div class="btns">
+        <button id="prev" class="ic" title="Previous" aria-label="Previous"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="2.6" height="14" rx="1.3"/><path d="M20 6.2v11.6a1.2 1.2 0 0 1-1.86 1L9.6 13a1.2 1.2 0 0 1 0-2l8.54-5.8A1.2 1.2 0 0 1 20 6.2z"/></svg></button>
+        <button id="play" title="Play/Pause" aria-label="Play or pause"><svg class="play" viewBox="0 0 24 24"><path d="M7.5 5.4v13.2a1.3 1.3 0 0 0 2 1.1l10.3-6.6a1.3 1.3 0 0 0 0-2.2L9.5 4.3a1.3 1.3 0 0 0-2 1.1z"/></svg><svg class="pause" viewBox="0 0 24 24"><rect x="6" y="4.5" width="4.2" height="15" rx="1.6"/><rect x="13.8" y="4.5" width="4.2" height="15" rx="1.6"/></svg></button>
+        <button id="next" class="ic" title="Next" aria-label="Next"><svg viewBox="0 0 24 24"><rect x="17.4" y="5" width="2.6" height="14" rx="1.3"/><path d="M4 6.2v11.6a1.2 1.2 0 0 0 1.86 1L14.4 13a1.2 1.2 0 0 0 0-2L5.86 5.2A1.2 1.2 0 0 0 4 6.2z"/></svg></button>
+      </div>
+      <div class="progress"><span id="tNow">0:00</span><div id="bar"><div></div></div><span id="tEnd">0:00</span></div>
     </div>
   </header>
-  <div id="bar"><div></div></div>
   <div id="lyrics"><div class="loader" aria-label="Connecting to Spotify"><i></i><i></i><i></i><i></i></div></div>
+  <button id="follow" class="glass"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="fill:none"><path d="M12 5v13M6 12.5l6 6 6-6"/></svg>Back to current line</button>
   <footer>
-    <div class="group">
-      <button id="smaller" title="Smaller text">A−</button>
-      <button id="bigger" title="Bigger text">A+</button>
+    <div class="pill glass">
+      <button id="smaller" class="ic" title="Smaller text" aria-label="Smaller text"><span class="aa s">A</span></button>
+      <button id="bigger" class="ic" title="Bigger text" aria-label="Bigger text"><span class="aa l">A</span></button>
     </div>
-    <div class="group">
-      <button id="earlier" title="Lyrics earlier">−0.5s</button>
-      <span id="offsetLabel">sync 0.0s</span>
-      <button id="later" title="Lyrics later">+0.5s</button>
+    <div class="pill glass">
+      <button id="earlier" class="ic" title="Lyrics earlier" aria-label="Lyrics earlier"><svg viewBox="0 0 24 24"><rect x="5" y="10.8" width="14" height="2.4" rx="1.2"/></svg></button>
+      <div class="syncval"><small>SYNC</small><span id="offsetLabel">0.0s</span></div>
+      <button id="later" class="ic" title="Lyrics later" aria-label="Lyrics later"><svg viewBox="0 0 24 24"><rect x="5" y="10.8" width="14" height="2.4" rx="1.2"/><rect x="10.8" y="5" width="2.4" height="14" rx="1.2"/></svg></button>
     </div>
-    <div class="group">
-      <button id="follow" title="Jump back to current line">⤓</button>
-      <button id="logout" title="Disconnect">⏻</button>
+    <div class="pill glass">
+      <button id="logout" class="ic" title="Disconnect Spotify" aria-label="Disconnect Spotify"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" style="fill:none"><path d="M12 3.5v8"/><path d="M7.05 6.6a7.5 7.5 0 1 0 9.9 0"/></svg></button>
     </div>
   </footer>
 </div>
@@ -281,7 +327,10 @@
   let lines = null, lineEls = [], activeIdx = -1, follow = true, lastAutoScroll = 0;
 
   const applyFs = () => { document.documentElement.style.setProperty('--fs', fs + 'px'); store.set('fs', fs); };
-  const applyOffset = () => { $('offsetLabel').textContent = 'sync ' + (offset > 0 ? '+' : '') + (offset / 1000).toFixed(1) + 's'; store.set('offset', offset); };
+  const applyOffset = () => { $('offsetLabel').textContent = (offset > 0 ? '+' : '') + (offset / 1000).toFixed(1) + 's';
+    $('offsetLabel').classList.toggle('on', offset !== 0); store.set('offset', offset); };
+  const mmss = ms => { const t = Math.max(0, Math.floor(ms / 1000)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
+  let shownSec = -1, shownDur = -1, shownPlaying = null, shownFollow = null;
 
   function showMsg(text) {
     lines = null; lineEls = []; activeIdx = -1;
@@ -785,6 +834,13 @@
   function tick() {
     const pos = state.progress + (state.playing ? performance.now() - state.at : 0);
     $('bar').firstElementChild.style.width = Math.min(100, pos / state.duration * 100) + '%';
+    // Times, play/pause icon and the "back to current line" chip: only touch the page when they change.
+    const sec = Math.floor(pos / 1000);
+    if (sec !== shownSec) { shownSec = sec; $('tNow').textContent = mmss(Math.min(pos, state.duration)); }
+    if (state.duration !== shownDur) { shownDur = state.duration; $('tEnd').textContent = mmss(state.duration); }
+    if (state.playing !== shownPlaying) { shownPlaying = state.playing; $('play').classList.toggle('is-playing', state.playing); }
+    const away = !follow && !!lines;
+    if (away !== shownFollow) { shownFollow = away; $('follow').classList.toggle('show', away); }
     if (lines && lines.length) {
       const p = pos + offset + LEAD;
       let i = -1;
