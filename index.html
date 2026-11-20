@@ -17,6 +17,8 @@
     filter: blur(60px) saturate(1.5) brightness(.55); transition: background-image .8s; }
   #shade { position: fixed; inset: 0; z-index: 0; background: rgba(0,0,0,.35); }
   #fx { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; }
+  /* Background layers are decoration only: never let them catch taps meant for the page. */
+  #bgArt, #shade, #fx { pointer-events: none; }
   #app { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column; }
   header { display: flex; align-items: center; gap: 20px; padding: 18px 28px; }
   #art { width: 84px; height: 84px; border-radius: 10px; background: #222; object-fit: cover; flex: none; }
@@ -100,7 +102,7 @@
   footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 28px 20px; }
   footer .group { display: flex; gap: 10px; align-items: center; }
   #offsetLabel { font-size: 20px; opacity: .8; min-width: 110px; text-align: center; }
-  #setup { max-width: 760px; margin: 8vh auto; padding: 0 32px; font-size: 22px; line-height: 1.5; }
+  #setup { position: relative; z-index: 2; max-width: 760px; margin: 8vh auto; padding: 0 32px; font-size: 22px; line-height: 1.5; }
   #setup h1 { font-size: 40px; }
   #setup input { width: 100%; font-size: 24px; padding: 16px; border-radius: 12px; border: 0; margin: 8px 0 18px; }
   #setup code { background: rgba(255,255,255,.12); padding: 2px 8px; border-radius: 6px; word-break: break-all; }
@@ -179,6 +181,17 @@
   const randStr = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
 
   async function startLogin(clientId) {
+    // Show that the tap registered, and surface any failure instead of silently doing nothing.
+    for (const b of [$('quickConnect'), $('connect')]) { b.disabled = true; b.dataset.label = b.dataset.label || b.textContent; b.textContent = 'Opening Spotify…'; }
+    try { await goToSpotifyLogin(clientId); }
+    catch (e) {
+      for (const b of [$('quickConnect'), $('connect')]) { b.disabled = false; b.textContent = b.dataset.label; }
+      $('setupErr').textContent = 'Couldn’t start the Spotify login: ' + (e && e.message || e);
+    }
+  }
+
+  async function goToSpotifyLogin(clientId) {
+    if (!(window.crypto && crypto.subtle)) throw new Error('this browser is missing secure login support (crypto.subtle).');
     const verifier = randStr(64);
     const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
     store.set('client_id', clientId);
