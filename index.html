@@ -60,7 +60,26 @@
   [data-vibe="mellow"] .line.active { animation: bloom 1.2s cubic-bezier(.2,.7,.2,1); }
   #vibe { display: inline-block; margin-top: 6px; font-size: 18px; padding: 3px 12px; border-radius: 999px;
     background: rgba(255,255,255,.14); cursor: pointer; user-select: none; }
-  @media (prefers-reduced-motion: reduce) { .line.active { animation: none !important; } }
+  /* Climax (final chorus): the current line gets bigger and takes on the vibe's look; the rest fades back. */
+  body.climax .line.active { font-size: calc(var(--fs) * 1.7); }
+  body.climax .line:not(.active) { opacity: .1; }
+  .line > span { transition: letter-spacing 1.2s ease; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @keyframes breathe { 50% { text-shadow: 0 0 46px var(--accent), 0 0 18px var(--accent), 0 2px 14px rgba(0,0,0,.5); } }
+  @keyframes heat { 50% { text-shadow: 0 0 34px hsl(14 100% 55%), 0 0 12px hsl(40 100% 60%), 0 2px 14px rgba(0,0,0,.6); } }
+  .climax[data-vibe="pop"] .line.active > span, .climax[data-vibe="hiphop"] .line.active > span {
+    background: linear-gradient(90deg, #fff 0%, var(--accent) 25%, #fff 50%, var(--accent) 75%, #fff 100%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    animation: shimmer 2.4s linear infinite; }
+  .climax[data-vibe="hiphop"] .line.active > span {
+    background-image: linear-gradient(90deg, #fff6d5 0%, hsl(45 100% 60%) 25%, #fff6d5 50%, hsl(38 100% 55%) 75%, #fff6d5 100%); }
+  .climax[data-vibe="club"]   .line.active > span { animation: breathe .55s ease-in-out infinite; }
+  .climax[data-vibe="metal"]  .line.active > span { animation: heat .8s ease-in-out infinite; }
+  .climax[data-vibe="punk"]   .line.active > span { text-shadow: 4px 3px 0 hsl(330 100% 62%), -3px -2px 0 hsl(80 100% 55%); }
+  .climax[data-vibe="rock"]   .line.active > span { text-shadow: 0 0 30px #fff, 0 0 60px hsl(42 100% 75%), 0 2px 14px rgba(0,0,0,.5); }
+  .climax[data-vibe="chill"]  .line.active > span { animation: breathe 3s ease-in-out infinite; }
+  .climax[data-vibe="mellow"] .line.active > span { letter-spacing: .04em; text-shadow: 0 0 30px hsl(30 100% 70%), 0 2px 14px rgba(0,0,0,.5); }
+  @media (prefers-reduced-motion: reduce) { .line.active, .line.active > span { animation: none !important; } }
   .plain .line { opacity: .9; cursor: default; }
   .msg { font-size: 30px; opacity: .6; text-align: center; margin-top: 12vh; animation: fadeUp .5s ease-out both; }
   /* Song changes: old lyrics and title slide out, the new song slides in. */
@@ -236,10 +255,49 @@
 
   function showMsg(text) {
     lines = null; lineEls = []; activeIdx = -1;
+    setClimax(false);
     $('lyrics').className = '';
     $('lyrics').innerHTML = '';
     const d = document.createElement('div'); d.className = 'msg'; d.textContent = text;
     $('lyrics').appendChild(d);
+  }
+
+  // Climax: the last chorus in the second half of the song (the big final chorus).
+  // Songs with no repeated lines fall back to their busiest 25 s stretch between 55% and 92%.
+  function markClimax(ls) {
+    for (const l of ls) { l.climax = false; l.climaxStart = false; }
+    if (ls.length < 8) return;
+    const end = ls[ls.length - 1].t;
+    if (end < 45000) return;
+    // Chorus blocks: runs of chorus lines, allowing one non-chorus line inside a block.
+    const blocks = []; let cur = null, gap = 0;
+    ls.forEach((l, i) => {
+      if (l.chorus) { if (!cur) cur = { a: i, b: i }; else cur.b = i; gap = 0; }
+      else if (cur && ++gap > 1) { blocks.push(cur); cur = null; gap = 0; }
+    });
+    if (cur) blocks.push(cur);
+    const late = blocks.filter(x => ls[x.a].t >= end * 0.5 && x.b > x.a);
+    let a = -1, b = -1;
+    if (late.length) ({ a, b } = late[late.length - 1]);
+    else {
+      let best = 0;
+      for (let i = 0; i < ls.length; i++) {
+        if (ls[i].t < end * 0.55 || ls[i].t > end * 0.92) continue;
+        let j = i; while (j + 1 < ls.length && ls[j + 1].t - ls[i].t < 25000) j++;
+        if (j - i > best) { best = j - i; a = i; b = j; }
+      }
+      if (best < 3) return;
+    }
+    for (let i = a; i <= b; i++) ls[i].climax = true;
+    ls[a].climaxStart = true;
+  }
+
+  let climaxOn = false;
+  function setClimax(on) {
+    if (on === climaxOn) return;
+    climaxOn = on;
+    document.body.classList.toggle('climax', on);
+    fx.setClimax(on);
   }
 
   function showLoader() {
@@ -250,6 +308,7 @@
 
   function renderLyrics(res) {
     const box = $('lyrics'); box.innerHTML = ''; activeIdx = -1; lineEls = [];
+    setClimax(false);
     if (res.error) return showMsg('Couldn’t reach the lyrics service.');
     if (res.instrumental) return showMsg('♪ Instrumental ♪');
     if (res.none) return showMsg('No lyrics found for this song.');
@@ -262,6 +321,7 @@
       const counts = new Map();
       for (const l of lines) { const k = norm(l.text); if (k.length > 3) counts.set(k, (counts.get(k) || 0) + 1); }
       for (const l of lines) l.chorus = (counts.get(norm(l.text)) || 0) >= 2;
+      markClimax(lines);
       // Singing pace = typical gap between lines; drives how fast the scene moves.
       const gaps = lines.slice(1).map((l, k) => l.t - lines[k].t).filter(g => g > 300 && g < 15000).sort((a, b) => a - b);
       fx.setPace(gaps.length ? gaps[gaps.length >> 1] : 3500);
@@ -296,6 +356,10 @@
               sparkLife: 2.4, sparkSize: .8 },
   };
   const VIBE_ORDER = Object.keys(VIBES);
+  // What the scene adds during each vibe's climax (the final chorus).
+  const CLIMAX_FX = { pop: 'confetti', club: 'lasers', metal: 'embers', punk: 'bolts',
+    rock: 'spotlight', hiphop: 'gold', chill: 'aurora', mellow: 'petals' };
+  for (const k of VIBE_ORDER) VIBES[k].climaxFx = CLIMAX_FX[k];
 
   // Genres come from MusicBrainz tags (detailed, e.g. "pop punk", "progressive house") with the
   // iTunes genre (broad, but almost always there) as backup; Spotify no longer shares genres.
@@ -398,6 +462,96 @@
     }
 
     let vibe = VIBES.pop, flash = 0, shake = 0;
+    let climax = 0, climaxTarget = 0, pieceAcc = 0, boltTimer = 0;
+    const pieces = [], bolts = [];
+
+    // ---- Climax effects (one per vibe) ----
+    const GOLD = ['hsl(45 100% 60%)', 'hsl(38 100% 55%)', 'hsl(50 100% 75%)'];
+    const FIRE = ['hsl(14 100% 55%)', 'hsl(28 100% 55%)', 'hsl(45 100% 60%)'];
+    function newPiece(kind) {
+      const r = Math.random;
+      if (kind === 'embers') return { kind, x: r() * W, y: H + 6, vx: (r() - .5) * 20, vy: -(70 + r() * 110) * SCALE * 2,
+        size: 1 + r() * 2.6, life: 2 + r() * 2, col: FIRE[(r() * 3) | 0], ph: r() * 6 };
+      if (kind === 'petals') return { kind, x: r() * W, y: -10, vx: (r() - .5) * 12, vy: (14 + r() * 18) * SCALE * 2,
+        size: 3 + r() * 4, life: 9, col: pick(), ph: r() * 6, rot: r() * 6, vr: (r() - .5) * 1.5 };
+      if (kind === 'gold') return { kind, x: r() * W, y: -10, vx: 0, vy: (40 + r() * 60) * SCALE * 2,
+        size: 1.5 + r() * 2.5, life: 6, col: GOLD[(r() * 3) | 0], ph: r() * 6 };
+      return { kind: 'confetti', x: r() * W, y: -10, vx: (r() - .5) * 40, vy: (50 + r() * 80) * SCALE * 2,
+        w: 4 + r() * 5, h: 2 + r() * 3, life: 7, col: pick(), ph: r() * 6, rot: r() * 6, vr: (r() - .5) * 8 };
+    }
+    function bolt() { // jagged lightning from the top edge
+      const pts = []; let x = W * (0.1 + Math.random() * 0.8), y = 0;
+      while (y < H * (0.45 + Math.random() * 0.3)) { pts.push([x, y]); x += (Math.random() - .5) * W * 0.07; y += H * (0.05 + Math.random() * 0.06); }
+      pts.push([x, y]);
+      bolts.push({ pts, life: 0.28, col: vibe.colours ? vibe.colours[(Math.random() * vibe.colours.length) | 0] : pick() });
+    }
+    function drawClimax(dt, d) {
+      const k = climax, kind = vibe.climaxFx;
+      // Falling / rising pieces.
+      const rate = { confetti: 45, petals: 7, embers: 50, gold: 22 }[kind] || 0;
+      pieceAcc += dt * rate * k;
+      while (pieceAcc > 1 && pieces.length < 220) { pieceAcc--; pieces.push(newPiece(kind)); }
+      if (pieceAcc > 1) pieceAcc = 1;
+      for (let i = pieces.length - 1; i >= 0; i--) {
+        const p = pieces[i]; p.life -= dt; p.ph += dt;
+        p.x += (p.vx + Math.sin(p.ph * 2) * (p.kind === 'petals' ? 18 : 6)) * dt; p.y += p.vy * dt;
+        if (p.rot !== undefined) p.rot += p.vr * dt;
+        if (p.life <= 0 || p.y > H + 20 || p.y < -20) { pieces.splice(i, 1); continue; }
+        const a = Math.min(1, p.life) * (p.kind === 'embers' ? 0.5 + 0.5 * Math.sin(p.ph * 9) : 1);
+        ctx.save(); ctx.translate(p.x, p.y);
+        if (p.kind === 'confetti') { ctx.rotate(p.rot); ctx.scale(1, Math.cos(p.ph * 4)); ctx.fillStyle = withAlpha(p.col, 0.85 * a); ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); }
+        else if (p.kind === 'petals') { ctx.rotate(p.rot); ctx.fillStyle = withAlpha(p.col, 0.45 * a); ctx.beginPath(); ctx.ellipse(0, 0, p.size, p.size * 0.55, 0, 0, 7); ctx.fill(); }
+        else { ctx.fillStyle = withAlpha(p.col, 0.3 * a); ctx.beginPath(); ctx.arc(0, 0, p.size * 2.6, 0, 7); ctx.fill();
+               ctx.fillStyle = withAlpha(p.col, 0.95 * a); ctx.beginPath(); ctx.arc(0, 0, p.size, 0, 7); ctx.fill(); }
+        ctx.restore();
+      }
+      if (kind === 'lasers') { // thin beams criss-crossing from the top corners
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 6; i++) {
+          const fromLeft = i % 2 === 0, ox = fromLeft ? 0 : W;
+          const ang = (fromLeft ? 0.35 : Math.PI - 0.35) + Math.sin(phase * 2.6 + i * 1.7) * 0.45 * (fromLeft ? 1 : -1);
+          const col = vibe.colours[i % vibe.colours.length];
+          ctx.strokeStyle = withAlpha(col, 0.55 * k); ctx.beginPath(); ctx.moveTo(ox, 0);
+          ctx.lineTo(ox + Math.cos(ang) * W * 1.6, Math.sin(ang) * W * 1.6); ctx.stroke();
+        }
+      }
+      if (kind === 'embers') { // hot glow pulsing up from the bottom edge
+        const g = ctx.createLinearGradient(0, H, 0, H * 0.45);
+        g.addColorStop(0, withAlpha(FIRE[0], (0.32 + 0.12 * Math.sin(phase * 7)) * k)); g.addColorStop(1, withAlpha(FIRE[0], 0));
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      }
+      if (kind === 'bolts') {
+        boltTimer -= dt; if (boltTimer <= 0) { bolt(); boltTimer = 1.2 + Math.random() * 1.6; }
+      }
+      for (let i = bolts.length - 1; i >= 0; i--) {
+        const b = bolts[i]; b.life -= dt; if (b.life <= 0) { bolts.splice(i, 1); continue; }
+        const a = b.life / 0.28;
+        for (const [w, al, c] of [[7, 0.25, b.col], [2.2, 0.95, 'hsl(0 0% 100%)']]) {
+          ctx.lineWidth = w; ctx.strokeStyle = withAlpha(c, al * a); ctx.beginPath();
+          b.pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+        }
+      }
+      if (kind === 'spotlight') { // warm spotlight swinging over the lyrics
+        const sx = W * 0.32 + Math.sin(phase * 0.9) * W * 0.12, half = W * 0.26;
+        const g = ctx.createLinearGradient(sx, 0, sx, H);
+        g.addColorStop(0, `hsl(42 100% 85% / ${(0.30 * k).toFixed(3)})`); g.addColorStop(1, 'hsl(42 100% 85% / 0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(sx - 10, 0); ctx.lineTo(sx + 10, 0);
+        ctx.lineTo(sx + half, H); ctx.lineTo(sx - half, H); ctx.closePath(); ctx.fill();
+      }
+      if (kind === 'aurora') { // soft waving bands across the top
+        for (let i = 0; i < 3; i++) {
+          const col = palette[(i + 1) % palette.length], base = H * (0.12 + i * 0.09);
+          ctx.fillStyle = withAlpha(col, 0.13 * k); ctx.beginPath(); ctx.moveTo(0, 0);
+          for (let x = 0; x <= W; x += W / 24) ctx.lineTo(x, base + Math.sin(x / W * 5 + phase * (0.8 + i * 0.3) + i) * H * 0.06);
+          ctx.lineTo(W, 0); ctx.closePath(); ctx.fill();
+        }
+      }
+      if (kind === 'petals') { // warm glow over the whole scene
+        const g = ctx.createRadialGradient(W * 0.4, H * 0.45, 0, W * 0.4, H * 0.45, W * 0.7);
+        g.addColorStop(0, `hsl(30 100% 70% / ${(0.10 * k).toFixed(3)})`); g.addColorStop(1, 'hsl(30 100% 70% / 0)');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      }
+    }
     const app = $('app');
 
     function burst(n, power) {
@@ -421,6 +575,7 @@
       angle += spin * dt;
       pulse = Math.max(0, pulse - dt * 1.5);
       hype += (hypeTarget - hype) * Math.min(1, dt * 1.4);
+      climax += (climaxTarget - climax) * Math.min(1, dt * 1.2);
       phase += dt * speed * 0.7;
 
       ctx.clearRect(0, 0, W, H);
@@ -436,7 +591,7 @@
       ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
 
       // Stage lights sweeping down from the top: chorus only, or all the time for club tracks.
-      const beam = Math.max(hype, vibe.beams || 0);
+      const beam = Math.max(hype, vibe.beams || 0, climax);
       if (beam > 0.02 && !still) {
         for (let k = 0; k < 3; k++) {
           const x0 = W * (0.15 + 0.32 * k), sway = Math.sin(phase * 1.3 * (vibe.beamSpeed || 1) + k * 2.1) * 0.55;
@@ -497,6 +652,7 @@
         const x = m.x + Math.sin(m.ph * 1.3) * 10 * SCALE;
         ctx.fillStyle = withAlpha(m.col, 0.45); ctx.beginPath(); ctx.arc(x, m.y, m.size, 0, 7); ctx.fill();
       }
+      if ((climax > 0.02 || pieces.length || bolts.length) && !still) drawClimax(dt, d);
       // Club light flash on each line (soft, once per line, never a rapid strobe).
       if (flash > 0.01) {
         ctx.fillStyle = withAlpha(palette[0], flash); ctx.fillRect(0, 0, W, H);
@@ -518,6 +674,17 @@
       setPace(ms) { pace = ms; },
       get pace() { return pace; },
       setVibe(v) { vibe = v; },
+      setClimax(on) { climaxTarget = on ? 1 : 0; if (!on) { boltTimer = 0; } },
+      // The moment the final chorus lands: one big hit in the vibe's style.
+      climaxHit() {
+        if (still) return;
+        pulse = 1; flash = Math.max(flash, 0.22); shake = vibe.shake * 1.8;
+        for (let i = 0; i < 3; i++) rings.push({ r: disc().r * (0.3 + i * 0.25), a: 0.8, col: pick() });
+        burst(vibe.chorusSparks * 2, vibe.power * 1.5);
+        const kind = vibe.climaxFx;
+        if (kind === 'confetti' || kind === 'gold') for (let i = 0; i < 90; i++) { const p = newPiece(kind); p.y = -Math.random() * H * 0.5; pieces.push(p); }
+        if (kind === 'bolts') { bolt(); bolt(); }
+      },
       onLine(line) {
         const sung = !!(line.text && line.text.trim() && line.text.trim() !== '♪');
         pulse = sung ? 1 : 0.5;
@@ -528,6 +695,12 @@
         burst(line.chorus ? vibe.chorusSparks : vibe.sparks, vibe.power * (line.chorus ? 1.25 : 1));
         flash = vibe.flash * (line.chorus ? 1.4 : 1);
         shake = vibe.shake * (line.chorus ? 1.4 : 1);
+        if (line.climax) { // every climax line hits a little harder, in the vibe's own way
+          if (vibe.climaxFx === 'bolts') bolt();
+          if (vibe.climaxFx === 'gold') rings.push({ r: disc().r * 0.5, a: 0.75, col: GOLD[0] });
+          if (vibe.climaxFx === 'lasers') flash = Math.max(flash, 0.2);
+          shake *= 1.3;
+        }
       },
     };
   })();
@@ -589,7 +762,11 @@
       if (i !== activeIdx) {
         lineEls.forEach((el, k) => { el.classList.toggle('active', k === i); el.classList.toggle('past', k < i); });
         // Only react to the song moving forward one line (not to seeks or sync nudges).
-        if (i >= 0 && i === activeIdx + 1) fx.onLine(lines[i]);
+        setClimax(i >= 0 && !!lines[i].climax);
+        if (i >= 0 && i === activeIdx + 1) {
+          fx.onLine(lines[i]);
+          if (lines[i].climaxStart) fx.climaxHit(); // the big moment as the final chorus lands
+        }
         activeIdx = i;
         if (follow && i >= 0) {
           const el = lineEls[i], box = $('lyrics');
@@ -741,8 +918,10 @@
     const words = ['This is a demo of the lyrics screen', 'Each line lights up in time', 'Then scrolls up out of the way',
       'Use the sync buttons if words run early', 'Or late compared to the song', 'Connect Spotify to see real songs'];
     const synced = words.map((text, i) => ({ t: 1000 + i * 2500, text }));
+    const demoClimax = new URLSearchParams(location.search).has('climax'); // ?demo&vibe=metal&climax
     const loop = () => { state = { trackId: 'demo', progress: 0, at: performance.now(), playing: true, duration: 17000 };
-      renderLyrics({ synced }); };
+      renderLyrics({ synced });
+      if (demoClimax) synced.forEach((l, i) => { l.climax = i >= 2; l.climaxStart = i === 2; }); };
     loop(); setInterval(loop, 17000);
     requestAnimationFrame(tick);
   }
