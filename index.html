@@ -9,27 +9,14 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: #000; color: #fff;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
-  /* Album colours: registered so they cross-fade smoothly when the song changes. */
-  @property --c1 { syntax: '<color>'; inherits: true; initial-value: #1b1b2a; }
-  @property --c2 { syntax: '<color>'; inherits: true; initial-value: #14141c; }
-  @property --c3 { syntax: '<color>'; inherits: true; initial-value: #0d0d12; }
+  /* Accent from the album cover; registered so it cross-fades when the song changes. */
   @property --accent { syntax: '<color>'; inherits: true; initial-value: #1ed760; }
-  :root { transition: --c1 1.2s, --c2 1.2s, --c3 1.2s, --accent 1.2s; }
-  #bg { position: fixed; inset: -20%; z-index: 0;
-    background:
-      radial-gradient(circle at 25% 25%, var(--c1), transparent 55%),
-      radial-gradient(circle at 75% 35%, var(--c2), transparent 55%),
-      radial-gradient(circle at 50% 85%, var(--c3), transparent 60%),
-      var(--c3);
-    animation: drift 24s ease-in-out infinite alternate; }
+  :root { transition: --accent 1.2s; }
+  /* Layers behind the app: blurred cover, a dark shade, then the song-reactive scene (#fx). */
   #bgArt { position: fixed; inset: -60px; z-index: 0; background-size: cover; background-position: center;
-    filter: blur(70px) saturate(1.4); opacity: .25; mix-blend-mode: soft-light; }
-  #shade { position: fixed; inset: 0; z-index: 0; background: rgba(0,0,0,.38); }
-  @keyframes drift {
-    0%   { transform: translate(0, 0) rotate(0deg) scale(1); }
-    50%  { transform: translate(4%, -3%) rotate(8deg) scale(1.08); }
-    100% { transform: translate(-3%, 4%) rotate(-6deg) scale(1.04); }
-  }
+    filter: blur(60px) saturate(1.5) brightness(.55); transition: background-image .8s; }
+  #shade { position: fixed; inset: 0; z-index: 0; background: rgba(0,0,0,.35); }
+  #fx { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; }
   #app { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column; }
   header { display: flex; align-items: center; gap: 20px; padding: 18px 28px; }
   #art { width: 84px; height: 84px; border-radius: 10px; background: #222; object-fit: cover; flex: none; }
@@ -47,14 +34,11 @@
     opacity: .22; transition: opacity .3s, font-size .3s cubic-bezier(.2,.8,.2,1); cursor: pointer; }
   .line.past { opacity: .16; }
   /* Real font-size (not transform) so the big line reflows: no overlap, wraps across the full width. */
-  .line.active { opacity: 1; font-size: calc(var(--fs) * 1.5); animation: pop .45s cubic-bezier(.2,1.6,.4,1); }
-  /* Karaoke wipe: the span is inline, so the gradient runs as one strip across wrapped lines. */
-  .line.active > span {
-    background: linear-gradient(90deg, #fff var(--p, 0%), rgba(255,255,255,.38) var(--p, 0%));
-    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-    filter: drop-shadow(0 0 22px color-mix(in srgb, var(--accent) 70%, transparent)); }
+  .line { text-shadow: 0 2px 14px rgba(0,0,0,.45); }
+  .line.active { opacity: 1; font-size: calc(var(--fs) * 1.5); animation: pop .45s cubic-bezier(.2,1.6,.4,1);
+    text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 75%, transparent), 0 2px 14px rgba(0,0,0,.5); }
   @keyframes pop { 0% { transform: translateY(14px) scale(.96); } 100% { transform: none; } }
-  @media (prefers-reduced-motion: reduce) { #bg, .line.active { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .line.active { animation: none; } }
   .plain .line { opacity: .9; cursor: default; }
   .msg { font-size: 34px; opacity: .7; text-align: center; margin-top: 10vh; }
   #bar { height: 5px; background: rgba(255,255,255,.15); }
@@ -71,7 +55,7 @@
 </style>
 </head>
 <body>
-<div id="bg"></div><div id="bgArt"></div><div id="shade"></div>
+<div id="bgArt"></div><div id="shade"></div><canvas id="fx"></canvas>
 
 <div id="setup" class="hidden">
   <h1>Lyrics for the car</h1>
@@ -232,6 +216,16 @@
     const arr = res.synced || res.plain.map(text => ({ text }));
     box.className = res.synced ? '' : 'plain';
     lines = res.synced || null;
+    if (lines) {
+      // Lines that come back 2+ times are almost always the chorus: the scene goes bigger on those.
+      const norm = s => (s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+      const counts = new Map();
+      for (const l of lines) { const k = norm(l.text); if (k.length > 3) counts.set(k, (counts.get(k) || 0) + 1); }
+      for (const l of lines) l.chorus = (counts.get(norm(l.text)) || 0) >= 2;
+      // Singing pace = typical gap between lines; drives how fast the scene moves.
+      const gaps = lines.slice(1).map((l, k) => l.t - lines[k].t).filter(g => g > 300 && g < 15000).sort((a, b) => a - b);
+      fx.setPace(gaps.length ? gaps[gaps.length >> 1] : 3500);
+    }
     for (const l of arr) {
       const d = document.createElement('div');
       d.className = 'line';
@@ -241,6 +235,155 @@
     }
     box.scrollTop = 0; follow = true;
   }
+
+  // ---------- Song-reactive scene ----------
+  // The album cover spins on a record (33⅓ rpm while playing, coasting to a stop on pause).
+  // Every new lyric line sends a light pulse and a spray of sparks in the cover's colours; the
+  // chorus (lines that repeat) brings out sweeping stage lights and more sparks; ambient specks
+  // drift up at the song's singing pace.
+  const fx = (() => {
+    const cv = $('fx'), ctx = cv.getContext('2d');
+    const SCALE = 0.6; // draw below screen resolution: lighter on the car's GPU, and the glow hides it
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const DEFAULT = ['hsl(141 74% 48%)', 'hsl(262 100% 71%)', 'hsl(336 100% 71%)', 'hsl(197 100% 71%)'];
+    const RPM = 33.333 / 60 * Math.PI * 2;
+    const withAlpha = (c, a) => c.replace(')', ` / ${a.toFixed(3)})`);
+    let W = 0, H = 0, palette = DEFAULT, label = null, rec = null, recR = 0, dirty = true;
+    let angle = 0, spin = 0, pulse = 0, hype = 0, hypeTarget = 0, pace = 3500, phase = 0, moteAcc = 0;
+    const sparks = [], rings = [], motes = [];
+    const pick = () => palette[(Math.random() * palette.length) | 0];
+    const resize = () => { W = cv.width = Math.round(innerWidth * SCALE); H = cv.height = Math.round(innerHeight * SCALE); dirty = true; };
+    resize(); addEventListener('resize', resize);
+
+    // Record sits in the bottom-right corner, partly off screen, so the lyrics keep the stage.
+    const disc = () => { const r = Math.min(W, H) * 0.46; return { x: W - r * 0.55, y: H - r * 0.62, r }; };
+
+    function buildRecord(r) {
+      recR = r; dirty = false;
+      const s = Math.ceil(r * 2) + 2; rec = document.createElement('canvas'); rec.width = rec.height = s;
+      const g = rec.getContext('2d'); g.translate(s / 2, s / 2);
+      g.fillStyle = '#0a0a0c'; g.beginPath(); g.arc(0, 0, r, 0, 7); g.fill();
+      g.strokeStyle = 'rgba(255,255,255,.055)'; g.lineWidth = 1;
+      for (let rr = r * 0.4; rr < r * 0.97; rr += Math.max(2, r / 42)) { g.beginPath(); g.arc(0, 0, rr, 0, 7); g.stroke(); }
+      g.strokeStyle = 'rgba(255,255,255,.14)'; g.lineWidth = 2; g.beginPath(); g.arc(0, 0, r * 0.985, 0, 7); g.stroke();
+      g.save(); g.beginPath(); g.arc(0, 0, r * 0.36, 0, 7); g.clip();
+      if (label) g.drawImage(label, -r * 0.36, -r * 0.36, r * 0.72, r * 0.72); else { g.fillStyle = palette[0]; g.fill(); }
+      g.restore();
+      g.fillStyle = '#050505'; g.beginPath(); g.arc(0, 0, r * 0.028, 0, 7); g.fill();
+    }
+
+    function burst(n, power) {
+      if (still) return;
+      const d = disc();
+      for (let k = 0; k < n && sparks.length < 140; k++) {
+        const a = Math.PI * (1.0 + Math.random() * 0.62); // fan out up and to the left, over the screen
+        const v = (90 + Math.random() * 170) * power * SCALE * 2;
+        const life = 1 + Math.random() * 0.9;
+        sparks.push({ x: d.x + Math.cos(a) * d.r * 0.95, y: d.y + Math.sin(a) * d.r * 0.95,
+          vx: Math.cos(a) * v, vy: Math.sin(a) * v, life, max: life, size: 1.5 + Math.random() * 3, col: pick() });
+      }
+    }
+
+    function frame(now) {
+      const dt = Math.min(0.05, (now - (frame.last || now)) / 1000); frame.last = now;
+      const playing = !!state.playing;
+      const speed = Math.max(0.6, Math.min(1.8, 3500 / pace)) * (playing ? 1 : 0.3);
+      spin += ((playing && !still ? RPM : 0) - spin) * Math.min(1, dt * (playing ? 2.5 : 1.1));
+      angle += spin * dt;
+      pulse = Math.max(0, pulse - dt * 1.5);
+      hype += (hypeTarget - hype) * Math.min(1, dt * 1.4);
+      phase += dt * speed * 0.7;
+
+      ctx.clearRect(0, 0, W, H);
+      const d = disc();
+      if (dirty || Math.abs(d.r - recR) > 1) buildRecord(d.r);
+
+      ctx.globalCompositeOperation = 'lighter';
+      // Glow behind the record: breathes with each line, brighter in the chorus.
+      const gr = d.r * (1.55 + 0.25 * pulse + 0.2 * hype);
+      const glow = ctx.createRadialGradient(d.x, d.y, d.r * 0.5, d.x, d.y, gr);
+      glow.addColorStop(0, withAlpha(palette[0], 0.22 + 0.4 * pulse + 0.18 * hype));
+      glow.addColorStop(1, withAlpha(palette[0], 0));
+      ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+
+      // Chorus stage lights sweeping down from the top.
+      if (hype > 0.02 && !still) {
+        for (let k = 0; k < 3; k++) {
+          const x0 = W * (0.15 + 0.32 * k), sway = Math.sin(phase * 1.3 + k * 2.1) * 0.55;
+          const len = H * 1.3, ex = x0 + Math.sin(sway) * len, ey = Math.cos(sway) * len, w = W * 0.09;
+          const col = palette[(k + 1) % palette.length];
+          const g = ctx.createLinearGradient(x0, 0, ex, ey);
+          g.addColorStop(0, withAlpha(col, 0.28 * hype)); g.addColorStop(1, withAlpha(col, 0));
+          ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(x0 - 4, 0); ctx.lineTo(x0 + 4, 0);
+          ctx.lineTo(ex + w * Math.cos(sway), ey - w * Math.sin(sway));
+          ctx.lineTo(ex - w * Math.cos(sway), ey + w * Math.sin(sway)); ctx.closePath(); ctx.fill();
+        }
+      }
+
+      // The record.
+      ctx.globalCompositeOperation = 'source-over';
+      const sc = 1 + 0.025 * pulse;
+      ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(angle); ctx.scale(sc, sc);
+      ctx.globalAlpha = 0.92; ctx.drawImage(rec, -rec.width / 2, -rec.height / 2); ctx.restore();
+      ctx.globalAlpha = 1;
+      if (ctx.createConicGradient) { // fixed light reflection, so the spin reads as real
+        const cg = ctx.createConicGradient(-0.7, d.x, d.y);
+        [[0, 0], [0.07, 0.11], [0.14, 0], [0.5, 0], [0.57, 0.08], [0.64, 0], [1, 0]]
+          .forEach(([o, a]) => cg.addColorStop(o, `rgba(255,255,255,${a})`));
+        ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(d.x, d.y, d.r * sc, 0, 7); ctx.fill();
+      }
+
+      ctx.globalCompositeOperation = 'lighter';
+      // Rings pushed out by each new line.
+      for (let k = rings.length - 1; k >= 0; k--) {
+        const r = rings[k]; r.r += d.r * 1.1 * dt; r.a -= dt * 0.55;
+        if (r.a <= 0) { rings.splice(k, 1); continue; }
+        ctx.strokeStyle = withAlpha(r.col, r.a); ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(d.x, d.y, r.r, 0, 7); ctx.stroke();
+      }
+      // Sparks.
+      for (let k = sparks.length - 1; k >= 0; k--) {
+        const p = sparks[k]; p.life -= dt;
+        if (p.life <= 0) { sparks.splice(k, 1); continue; }
+        p.vx *= 1 - dt * 1.2; p.vy = p.vy * (1 - dt * 1.2) + 40 * SCALE * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        const a = p.life / p.max;
+        ctx.fillStyle = withAlpha(p.col, 0.25 * a); ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 3, 0, 7); ctx.fill();
+        ctx.fillStyle = withAlpha(p.col, 0.9 * a); ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, 7); ctx.fill();
+      }
+      // Ambient specks rising at the song's pace; many more during the chorus.
+      if (!still) {
+        moteAcc += dt * (1.5 + 6 * hype) * speed;
+        while (moteAcc > 1 && motes.length < 90) {
+          moteAcc--;
+          motes.push({ x: Math.random() * W, y: H + 8, v: (14 + Math.random() * 26) * SCALE * 2,
+            size: 1 + Math.random() * 2.6, ph: Math.random() * 6, col: pick() });
+        }
+        if (moteAcc > 1) moteAcc = 1;
+      }
+      for (let k = motes.length - 1; k >= 0; k--) {
+        const m = motes[k]; m.y -= m.v * speed * dt; m.ph += dt;
+        if (m.y < -10) { motes.splice(k, 1); continue; }
+        const x = m.x + Math.sin(m.ph * 1.3) * 10 * SCALE;
+        ctx.fillStyle = withAlpha(m.col, 0.45); ctx.beginPath(); ctx.arc(x, m.y, m.size, 0, 7); ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    return {
+      setCover(img, pal) { label = img; palette = pal && pal.length ? pal : DEFAULT; dirty = true; },
+      setPace(ms) { pace = ms; },
+      onLine(line) {
+        const sung = !!(line.text && line.text.trim() && line.text.trim() !== '♪');
+        pulse = sung ? 1 : 0.5;
+        hypeTarget = line.chorus ? 1 : 0;
+        rings.push({ r: disc().r * 0.4, a: line.chorus ? 0.7 : 0.45, col: pick() });
+        if (sung) burst(line.chorus ? 28 : 10, line.chorus ? 1.3 : 1);
+      },
+    };
+  })();
 
   // ---------- Album colours ----------
   // Samples the cover, buckets similar colours, and picks the three most common
@@ -255,9 +398,9 @@
     return [h * 60, s, l];
   }
   const hsl = (h, s, l) => `hsl(${h.toFixed(0)} ${(s * 100).toFixed(0)}% ${(l * 100).toFixed(0)}%)`;
-  async function applyAlbumColours(url) {
+  async function applyAlbumColours(url, labelUrl) {
     const root = document.documentElement.style;
-    if (!url) { ['--c1', '--c2', '--c3', '--accent'].forEach(v => root.removeProperty(v)); return; }
+    if (!url) { root.removeProperty('--accent'); fx.setCover(null, null); return; }
     try {
       const img = new Image(); img.crossOrigin = 'anonymous'; img.src = url; await img.decode();
       const c = document.createElement('canvas'); c.width = c.height = 24;
@@ -272,12 +415,15 @@
       const cols = [...buckets.values()].map(b => ({ h: b.h / b.n, s: b.s / b.n, l: b.l / b.n, n: b.n }))
         .sort((a, b) => b.n * (0.4 + b.s) - a.n * (0.4 + a.s));
       while (cols.length < 3) cols.push(cols[0] || { h: 240, s: .2, l: .2 });
-      const dark = (col, l) => hsl(col.h, Math.min(col.s * 1.15, .85), Math.min(col.l, l));
-      root.setProperty('--c1', dark(cols[0], .42));
-      root.setProperty('--c2', dark(cols[1], .34));
-      root.setProperty('--c3', dark(cols[2], .16));
       const vivid = [...cols].sort((a, b) => b.s - a.s)[0];
       root.setProperty('--accent', hsl(vivid.h, Math.max(vivid.s, .55), .62));
+      // Bright versions of the cover's colours for the light show.
+      const palette = cols.slice(0, 4).map(c => hsl(c.h, Math.max(c.s, c.s < .15 ? 0 : .6), c.s < .15 ? .8 : .62));
+      palette.unshift(hsl(vivid.h, Math.max(vivid.s, .6), .62));
+      // Bigger copy of the cover for the record label.
+      const big = new Image(); big.crossOrigin = 'anonymous'; big.src = labelUrl || url;
+      await big.decode().catch(() => {});
+      fx.setCover(big.naturalWidth ? big : img, palette);
     } catch (e) { /* keep the previous colours if the cover can't be read */ }
   }
 
@@ -293,18 +439,10 @@
       const p = pos + offset;
       let i = -1;
       for (let k = 0; k < lines.length && lines[k].t <= p; k++) i = k;
-      if (i >= 0 && lineEls[i]) {
-        // Karaoke fill: sweep across the line at a singing pace, finishing by the next line at the latest.
-        const start = lines[i].t, next = lines[i + 1] ? lines[i + 1].t : start + 6000;
-        const text = lines[i].text || '';
-        const cjk = /[぀-ヿ㐀-鿿가-힯]/.test(text);
-        const est = 500 + text.length * (cjk ? 300 : 75);
-        const dur = Math.max(400, Math.min(next - start, est));
-        const pct = Math.max(0, Math.min(100, (p - start) / dur * 100));
-        lineEls[i].firstChild.style.setProperty('--p', pct.toFixed(1) + '%');
-      }
       if (i !== activeIdx) {
         lineEls.forEach((el, k) => { el.classList.toggle('active', k === i); el.classList.toggle('past', k < i); });
+        // Only react to the song moving forward one line (not to seeks or sync nudges).
+        if (i >= 0 && i === activeIdx + 1) fx.onLine(lines[i]);
         activeIdx = i;
         if (follow && i >= 0) {
           const el = lineEls[i], box = $('lyrics');
@@ -338,7 +476,7 @@
           $('artist').textContent = t.artists.map(a => a.name).join(', ');
           const img = t.album?.images?.[0]?.url || '';
           $('art').src = img; $('art').style.visibility = img ? 'visible' : 'hidden'; $('bgArt').style.backgroundImage = img ? `url("${img}")` : '';
-          applyAlbumColours(t.album?.images?.at(-1)?.url || img);
+          applyAlbumColours(t.album?.images?.at(-1)?.url || img, t.album?.images?.[1]?.url || img);
           showMsg('Loading lyrics…');
           const id = t.id, res = await fetchLyrics(t);
           if (id === state.trackId) renderLyrics(res);
