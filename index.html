@@ -302,20 +302,34 @@
   }
 
   // Genre decides the family; singing pace (ms between lyric lines) decides between energetic and mellow.
+  // Each tag votes for every family it matches, weighted by its rank (MusicBrainz lists the most
+  // agreed-on tags first), so "pop, pop rock, pop soul" lands on pop rather than soul.
+  // The third value boosts specific scenes over umbrella labels: "pop punk, alternative rock, emo"
+  // should read as punk, not as generic rock.
+  const FAMILIES = [
+    ['metal',  /metal|deathcore|grindcore|djent/, 1.6],
+    ['club',   /\bedm\b|house|techno|trance|dubstep|drum and bass|hardstyle|electro|\bdance\b|club|electronic/, 1.2],
+    ['punk',   /punk|grunge|post-hardcore|hardcore|\bemo\b/, 1.5],
+    ['hiphop', /hip hop|hip-hop|\brap\b|trap|drill|grime/, 1.3],
+    ['chill',  /lo-fi|lofi|jazz|r&b|rnb|soul|chill|ambient|bossa|city pop/, 1],
+    ['mellow', /sad|ballad|slowcore|acoustic|folk|singer|bedroom pop|melanchol/, 1],
+    ['rock',   /rock|alternative/, 0.8],
+    ['pop',    /pop/, 0.8],
+  ];
   function classify({ tags, it }, pace) {
-    const t = ' ' + [...tags, it].join(' | ') + ' ';
-    const has = re => re.test(t);
+    const score = {};
+    const vote = (tag, w) => { for (const [f, re, boost] of FAMILIES) if (re.test(tag)) score[f] = (score[f] || 0) + w * boost; };
+    tags.forEach((tag, i) => vote(tag, 1 / (1 + i * 0.6)));
+    if (it) vote(it, 0.8);
+    let fam = Object.keys(score).sort((a, b) => score[b] - score[a])[0] || 'pop';
+    // Singing pace splits energetic from mellow within a family.
     const slow = pace > 4300, fast = pace < 2700;
-    if (has(/metal|metalcore|deathcore|grindcore|djent/)) return 'metal';
-    if (has(/\bedm\b|house|techno|trance|dubstep|drum and bass|hardstyle|electro\b|\bdance\b(?!-pop)|club/)) return slow ? 'chill' : 'club';
-    if (has(/\bemo\b/)) return fast ? 'punk' : 'mellow';
-    if (has(/punk|grunge|post-hardcore|hardcore/)) return 'punk';
-    if (has(/hip hop|hip-hop|\brap\b|trap|drill|grime/)) return 'hiphop';
-    if (has(/lo-fi|lofi|jazz|r&b|rnb|soul|chill|ambient|bossa|city pop|neo soul/)) return 'chill';
-    if (has(/sad|ballad|slowcore|acoustic|folk|singer-songwriter|bedroom pop|melanchol/)) return fast ? 'pop' : 'mellow';
-    if (has(/rock|alternative/)) return slow ? 'mellow' : 'rock';
-    if (has(/electronic/)) return slow ? 'chill' : 'club';
-    return slow ? 'mellow' : 'pop'; // pop, k-pop, mandopop, etc.: slow ones are usually ballads
+    if (fam === 'club' && slow) fam = 'chill';
+    if (fam === 'punk' && tags.some(x => /\bemo\b/.test(x)) && !fast) fam = 'mellow';
+    if ((fam === 'pop' || fam === 'rock') && slow) fam = 'mellow'; // slow pop/rock is usually a ballad
+    if (fam === 'chill' && pace > 5000) fam = 'mellow';            // very slow soul/R&B: a ballad too
+    if (fam === 'mellow' && fast) fam = 'pop';
+    return fam;
   }
 
   let vibeKey = 'pop';
