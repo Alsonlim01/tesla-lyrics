@@ -443,15 +443,22 @@
       seen.add(x.id); synced.push(x.syncedLyrics);
       if (synced.length >= 8) break;
     }
+    // NetEase files run ~0.15 s early on average next to LRCLIB's (measured on 20 songs). When NetEase
+    // is the only source, nudge it later; when other files are there, the consensus takes care of it.
+    const NE_LATE = 150;
+    const nudge = (ls, x) => x && String(x.id).startsWith('ne') ? ls.map(l => ({ ...l, t: l.t + NE_LATE })) : ls;
     let res;
-    if (synced.length) res = { synced: consensusTiming(synced) || parseLRC(synced[0]) };
-    else {
-      // Nothing with the same length. A synced file up to 8 s different is usually still close enough;
-      // past that (typical for live recordings) the timing would be wrong, so show the words untimed.
+    if (synced.length) {
+      const only = synced.length === 1 ? found.find(x => x.syncedLyrics === synced[0]) : null;
+      res = { synced: nudge(consensusTiming(synced) || parseLRC(synced[0]), only) };
+    } else {
+      // Nothing with the same length. A file up to 8 s different (often a live take or a different
+      // master) is still shown timed, but its start may be off: those songs let you tap the line being
+      // sung to line it up (see renderLyrics). Past 8 s the words are shown untimed.
       found.sort((a, b) => Math.abs(a.duration - dur) - Math.abs(b.duration - dur));
       const near = found.find(x => x.syncedLyrics && Math.abs(x.duration - dur) < 8);
       const words = found.find(x => x.plainLyrics || x.syncedLyrics);
-      res = near ? { synced: parseLRC(near.syncedLyrics) }
+      res = near ? { synced: nudge(parseLRC(near.syncedLyrics), near), uncertain: true }
         : words ? { plain: (words.plainLyrics || words.syncedLyrics.replace(/\[[^\]]*\]/g, '')).split('\n').map(l => l.trim()),
             note: isLive ? 'Live version: words shown without timing' : 'Words shown without timing' }
         : found.some(x => x.instrumental) ? { instrumental: true }
@@ -463,7 +470,10 @@
 
   // ---------- UI state ----------
   let fs = Number(store.get('fs') || 44);
-  const offset = 0; store.del('offset'); // the manual sync control is gone: timing is fixed automatically
+  // Timing correction for the current song only. It stays 0 except for songs whose lyrics come from a
+  // recording of a different length, where tapping the line being sung sets it (remembered per song).
+  let offset = 0; store.del('offset');
+  const aligned = JSON.parse(store.get('aligned') || '{}');
   let state = { trackId: null, progress: 0, at: 0, playing: false, duration: 1 };
   let lines = null, lineEls = [], activeIdx = -1, follow = true, lastAutoScroll = 0;
 
@@ -551,6 +561,18 @@
       const s = document.createElement('span'); s.textContent = l.text || ' '; d.appendChild(s);
       if (res.synced) d.onclick = () => seekTo(l.t);
       box.appendChild(d); lineEls.push(d);
+    }
+    offset = (res.uncertain && aligned[state.trackId]) || 0;
+    if (res.uncertain) {
+      // Lyrics from a different-length recording: tapping a line means "this is being sung now".
+      res.note = offset ? 'Timing lined up · tap a line to adjust' : 'Tap the line being sung to line up the timing';
+      lineEls.forEach((el, k) => { el.onclick = () => {
+        const pos = state.progress + (state.playing ? performance.now() - state.at : 0);
+        offset = Math.ceil(arr[k].t - pos - LEAD) + 20; // just past the line's start, so it lights straight away
+        aligned[state.trackId] = offset; store.set('aligned', JSON.stringify(aligned));
+        activeIdx = -2; follow = true;
+        const n = box.querySelector('.note'); if (n) n.textContent = 'Timing lined up · tap a line to adjust';
+      }; });
     }
     if (res.note) { const n = document.createElement('div'); n.className = 'note'; n.textContent = res.note; box.prepend(n); }
     box.scrollTop = 0; follow = true;
