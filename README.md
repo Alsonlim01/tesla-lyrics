@@ -29,3 +29,15 @@ Spotify login needs a real https address.
 - Scrolling manually pauses auto-scroll; **⤓** resumes it.
 - Previous / play-pause / next buttons control Spotify playback (needs Spotify Premium).
 - Add `?demo` to the address to preview the screen without logging in.
+
+## Chinese lyrics relay
+
+LRCLIB has few Chinese songs, so the page also asks a small relay (`relay/`, deployed on Vercel at
+`https://tesla-lyrics-relay.vercel.app/api/lyrics`) that looks the song up on NetEase Cloud Music and
+returns its timed lyrics. It's used straight away for songs with Chinese, Japanese or Korean titles or
+artists, and for any song LRCLIB has no timed lyrics for. To redeploy after changing it:
+
+```
+cd relay
+npx vercel deploy --prod
+```

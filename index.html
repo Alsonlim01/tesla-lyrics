@@ -372,8 +372,24 @@
       .replace(/\s*[(\[（【][^)\]）】]*\b(live|feat\.?|ft\.?|with|remaster(ed)?|version|edit|mix|mono|stereo|acoustic|demo|session|现场|現場)\b[^)\]）】]*[)\]）】]/gi, '')
       .replace(/\s*[(（](live|现场|現場)[)）]/gi, '').trim() || name;
   }
+  // Chinese lyrics: our relay looks the song up on NetEase Cloud Music (much better Chinese coverage
+  // than LRCLIB; it can't be read from a web page directly). Returns an LRCLIB-shaped entry, or null.
+  const RELAY = 'https://tesla-lyrics-relay.vercel.app/api/lyrics';
+  const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+  async function relayLyrics(track) {
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 7000);
+    try {
+      const r = await fetch(RELAY + '?' + new URLSearchParams({ title: track.name,
+        artists: track.artists.map(a => a.name).join('|'), duration: Math.round(track.duration_ms / 1000) }), { signal: ctl.signal });
+      const j = r.ok ? await r.json() : null;
+      return j && j.found ? { id: 'ne' + j.id, trackName: j.name, artistName: j.artists.join(', '), duration: j.duration, syncedLyrics: j.lrc } : null;
+    } catch (e) { return null; } finally { clearTimeout(timer); }
+  }
   async function fetchLyrics(track) {
     if (lyricCache.has(track.id)) return lyricCache.get(track.id);
+    // Chinese/Japanese/Korean songs: ask the relay straight away, alongside LRCLIB.
+    const looksCJK = CJK_RE.test(track.name + ' ' + (track.album?.name || '') + ' ' + track.artists.map(a => a.name).join(' '));
+    let relay = looksCJK ? relayLyrics(track) : null;
     const artists = track.artists.map(a => a.name);
     const base = 'https://lrclib.net/api/';
     const dur = track.duration_ms / 1000;
@@ -406,6 +422,9 @@
         if (normLine(cleanTitle(x.trackName || '')) === titleKey && (sameArtist || Math.abs(x.duration - dur) <= 3)) found.push(x);
       }
     }
+    // Nothing on LRCLIB for this exact version: try the relay too (for any song), and add what it finds.
+    if (!found.some(fits) && !relay) relay = relayLyrics(track);
+    if (relay) { const ne = await relay; if (ne) found.push(ne); }
     if (failed && !found.some(fits)) return { error: true }; // don't remember this: try again shortly
     // Every synced file for this version of the song (same length, within 3 s).
     const seen = new Set(), synced = [];

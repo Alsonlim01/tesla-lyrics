@@ -1,0 +1,4 @@
+{
+  "regions": ["hkg1"],
+  "functions": { "api/lyrics.js": { "maxDuration": 10 } }
+}

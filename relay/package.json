@@ -1,0 +1,11 @@
+{
+  "name": "tesla-lyrics-relay",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pinyin-pro": "^3.29.5"
+  }
+}
