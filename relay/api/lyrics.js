@@ -7,6 +7,7 @@
 // -> { found: true, id, name, artists, duration, lrc }   or   { found: false }
 
 import { pinyin } from 'pinyin-pro';
+import { toSimp } from './_t2s.js';
 
 const ALLOWED = ['https://alsonlim01.github.io', 'http://localhost:8000'];
 const HEADERS = {
@@ -14,7 +15,8 @@ const HEADERS = {
   Referer: 'https://music.163.com/',
 };
 
-const norm = s => (s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+// Traditional characters become Simplified, so 小幸運 (Spotify) matches 小幸运 (NetEase).
+const norm = s => toSimp(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const hasHan = s => /\p{Script=Han}/u.test(s || '');
 // 周深 -> "zhoushen", so Spotify's romanised names match NetEase's Chinese ones.
 const py = s => hasHan(s) ? norm(pinyin(s, { toneType: 'none', type: 'array' }).join('')) : norm(s);
@@ -78,7 +80,7 @@ export default async function handler(req, res) {
   if (!title || !duration) return res.status(400).json({ error: 'title and duration are required' });
 
   try {
-    const plain = cleanTitle(title);
+    const plain = toSimp(cleanTitle(title));
     const resolved = await resolveArtists(artists);
     const artistIds = new Set(resolved.map(a => a.id));
     const wantArtists = artists.map(a => (hasHan(a) ? py(a) : norm(a)));
