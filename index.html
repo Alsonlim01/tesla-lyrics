@@ -109,6 +109,8 @@
   .climax[data-vibe="mellow"] .line.active > span { letter-spacing: .04em; text-shadow: 0 0 30px hsl(30 100% 70%), 0 2px 14px rgba(0,0,0,.5); }
   @media (prefers-reduced-motion: reduce) { .line.active, .line.active > span { animation: none !important; } }
   .plain .line { opacity: .9; cursor: default; }
+  .note { display: inline-block; margin: 0 0 22px; padding: 6px 14px; border-radius: 999px; font-size: 16px; font-weight: 600;
+    color: rgba(255,255,255,.6); background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.1); }
   .msg { font-size: 30px; opacity: .6; text-align: center; margin-top: 12vh; animation: fadeUp .5s ease-out both; }
   /* Song changes: old lyrics and title slide out, the new song slides in. */
   #lyrics, #meta, #art { transition: opacity .26s ease, transform .26s ease; }
@@ -363,39 +365,68 @@
     for (let i = 1; i < out.length; i++) if (out[i].t < out[i - 1].t) out[i].t = out[i - 1].t;
     return out;
   }
+  // "占有 - Live", "Yellow - Remastered 2011", "Song (feat. X)" -> the plain song title, plus whether it's a live take.
+  const LIVE_RE = /\blive\b|现场|現場|演唱会|演唱會/i;
+  function cleanTitle(name) {
+    return name.replace(/\s+-\s+.*$/, '')
+      .replace(/\s*[(\[（【][^)\]）】]*\b(live|feat\.?|ft\.?|with|remaster(ed)?|version|edit|mix|mono|stereo|acoustic|demo|session|现场|現場)\b[^)\]）】]*[)\]）】]/gi, '')
+      .replace(/\s*[(（](live|现场|現場)[)）]/gi, '').trim() || name;
+  }
   async function fetchLyrics(track) {
     if (lyricCache.has(track.id)) return lyricCache.get(track.id);
-    const artist = track.artists[0]?.name || '';
+    const artists = track.artists.map(a => a.name);
     const base = 'https://lrclib.net/api/';
     const dur = track.duration_ms / 1000;
-    let hit = null, list = [];
-    try {
-      const [g, sr] = await Promise.all([
-        fetch(base + 'get?' + new URLSearchParams({ track_name: track.name, artist_name: artist,
-          album_name: track.album?.name || '', duration: Math.round(dur) })).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(base + 'search?' + new URLSearchParams({ track_name: track.name, artist_name: artist }))
-          .then(r => r.ok ? r.json() : []).catch(() => [])]);
-      hit = g; list = Array.isArray(sr) ? sr : [];
-      if (!hit && !list.length) throw new Error('offline');
-    } catch (e) { return { error: true }; }
+    const title = cleanTitle(track.name);
+    const isLive = LIVE_RE.test(track.name) || LIVE_RE.test(track.album?.name || '');
+    let failed = false; // offline, rate-limited or a server hiccup: worth trying again, unlike "no lyrics"
+    const get = (path, params) => fetch(base + path + '?' + new URLSearchParams(params))
+      .then(r => { if (!r.ok && r.status !== 404) failed = true; return r.ok ? r.json() : null; })
+      .catch(() => { failed = true; return null; });
+    // Round 1: exact title and first artist (what usually works).
+    const round1 = await Promise.all([
+      get('get', { track_name: track.name, artist_name: artists[0], album_name: track.album?.name || '', duration: Math.round(dur) }),
+      get('search', { track_name: track.name, artist_name: artists[0] })]);
+    let found = [round1[0], ...(round1[1] || [])].filter(Boolean);
+    // Round 2, only if nothing lines up yet: the plain title, every artist, and the title alone
+    // (artists are often listed under another spelling or script, e.g. 周深 for Zhou Shen).
+    const fits = x => x.syncedLyrics && Math.abs(x.duration - dur) <= 3;
+    if (!found.some(fits)) {
+      const tries = [];
+      if (title !== track.name) tries.push({ track_name: title, artist_name: artists[0] });
+      for (const a of artists.slice(1)) tries.push({ track_name: title, artist_name: a });
+      tries.push({ track_name: title });
+      const more = await Promise.all(tries.map(t => get('search', t)));
+      const titleKey = normLine(title);
+      const artistKeys = artists.map(normLine);
+      for (const list of more) for (const x of list || []) {
+        // A title-only search can turn up a different song with the same name: keep it only if the
+        // artist matches or its length is within a few seconds of this track.
+        const sameArtist = artistKeys.some(a => a && normLine(x.artistName).includes(a));
+        if (normLine(cleanTitle(x.trackName || '')) === titleKey && (sameArtist || Math.abs(x.duration - dur) <= 3)) found.push(x);
+      }
+    }
+    if (failed && !found.some(fits)) return { error: true }; // don't remember this: try again shortly
     // Every synced file for this version of the song (same length, within 3 s).
     const seen = new Set(), synced = [];
-    for (const x of [hit, ...list]) {
-      if (!x || seen.has(x.id) || !x.syncedLyrics || Math.abs(x.duration - dur) > 3) continue;
+    for (const x of found) {
+      if (seen.has(x.id) || !fits(x)) continue;
       seen.add(x.id); synced.push(x.syncedLyrics);
       if (synced.length >= 8) break;
     }
     let res;
     if (synced.length) res = { synced: consensusTiming(synced) || parseLRC(synced[0]) };
     else {
-      // Nothing that matches exactly: fall back to the closest file, as before.
-      list.sort((a, b) => (!!b.syncedLyrics - !!a.syncedLyrics) || Math.abs(a.duration - dur) - Math.abs(b.duration - dur));
-      const near = (hit && (hit.syncedLyrics || hit.plainLyrics || hit.instrumental)) ? hit : (list.find(x => Math.abs(x.duration - dur) < 8) || list[0] || null);
-      res = !near ? { none: true }
-        : near.instrumental ? { instrumental: true }
-        : near.syncedLyrics ? { synced: parseLRC(near.syncedLyrics) }
-        : near.plainLyrics ? { plain: near.plainLyrics.split('\n') }
-        : { none: true };
+      // Nothing with the same length. A synced file up to 8 s different is usually still close enough;
+      // past that (typical for live recordings) the timing would be wrong, so show the words untimed.
+      found.sort((a, b) => Math.abs(a.duration - dur) - Math.abs(b.duration - dur));
+      const near = found.find(x => x.syncedLyrics && Math.abs(x.duration - dur) < 8);
+      const words = found.find(x => x.plainLyrics || x.syncedLyrics);
+      res = near ? { synced: parseLRC(near.syncedLyrics) }
+        : words ? { plain: (words.plainLyrics || words.syncedLyrics.replace(/\[[^\]]*\]/g, '')).split('\n').map(l => l.trim()),
+            note: isLive ? 'Live version: words shown without timing' : 'Words shown without timing' }
+        : found.some(x => x.instrumental) ? { instrumental: true }
+        : { none: true, live: isLive };
     }
     lyricCache.set(track.id, res);
     return res;
@@ -467,9 +498,9 @@
   function renderLyrics(res) {
     const box = $('lyrics'); box.innerHTML = ''; activeIdx = -1; lineEls = [];
     setClimax(false);
-    if (res.error) return showMsg('Couldn’t reach the lyrics service.');
+    if (res.error) return showMsg('Lyrics are taking a moment, trying again…');
     if (res.instrumental) return showMsg('♪ Instrumental ♪');
-    if (res.none) return showMsg('No lyrics found for this song.');
+    if (res.none) return showMsg(res.live ? 'No lyrics found for this live version' : 'No lyrics found for this song');
     const arr = res.synced || res.plain.map(text => ({ text }));
     box.className = res.synced ? '' : 'plain';
     lines = res.synced || null;
@@ -492,6 +523,7 @@
       if (res.synced) d.onclick = () => seekTo(l.t);
       box.appendChild(d); lineEls.push(d);
     }
+    if (res.note) { const n = document.createElement('div'); n.className = 'note'; n.textContent = res.note; box.prepend(n); }
     box.scrollTop = 0; follow = true;
   }
 
@@ -1006,6 +1038,7 @@
     // 4. New lyrics rise in.
     $('lyrics').classList.add('switching');
     renderLyrics(res); // also sets the singing pace used below
+    if (res.error) { songData.delete(t.id); setTimeout(() => { if (token === switchToken && state.trackId === t.id) { state.trackId = null; switchTrack(t); } }, 6000); }
     setVibe(vibeOverride[t.id] || classify(genres, res.synced ? fx.pace : 3500));
     void $('lyrics').offsetWidth;
     $('lyrics').classList.remove('switching'); $('lyrics').classList.add('entering');
