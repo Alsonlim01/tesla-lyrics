@@ -144,6 +144,11 @@
   #follow svg { width: 22px; height: 22px; }
   #follow.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
   #follow.show:active { transform: translate(-50%, 0) scale(.94); }
+  /* Short messages (e.g. a skip the car didn't take). */
+  #toast { position: absolute; left: 50%; top: 24px; z-index: 5; max-width: min(720px, 90vw); padding: 14px 24px; border-radius: 22px;
+    font-size: 19px; font-weight: 600; line-height: 1.35; text-align: center; transform: translate(-50%, -12px); opacity: 0;
+    pointer-events: none; transition: opacity .3s, transform .3s; }
+  #toast.show { transform: translate(-50%, 0); opacity: 1; }
   /* ---------- Setup screen ---------- */
   #setup { position: fixed; inset: 0; z-index: 2; display: grid; place-items: center; padding: 24px; overflow-y: auto; }
   /* Slow drifting colour behind the card. */
@@ -232,6 +237,7 @@
   </header>
   <div id="lyrics"><div class="loader" aria-label="Connecting to Spotify"><i></i><i></i><i></i><i></i></div></div>
   <button id="follow" class="glass"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="fill:none"><path d="M12 5v13M6 12.5l6 6 6-6"/></svg>Back to current line</button>
+  <div id="toast" class="glass" role="status"></div>
   <footer>
     <div class="pill glass">
       <button id="smaller" class="ic" title="Smaller text" aria-label="Smaller text"><span class="aa s">A</span></button>
@@ -247,6 +253,9 @@
 
 <script>
 (() => {
+  // Bumped on every change. The page checks for a newer copy and reloads itself between songs, so the
+  // car never keeps running an old version in a tab that stays open for weeks.
+  const BUILD = '2026-11-22.1';
   const SCOPES = 'user-read-currently-playing user-read-playback-state user-modify-playback-state';
   const REDIRECT = location.origin + location.pathname;
   const $ = id => document.getElementById(id);
@@ -386,14 +395,16 @@
   // than LRCLIB; it can't be read from a web page directly). Returns an LRCLIB-shaped entry, or null.
   const RELAY = 'https://tesla-lyrics-relay.vercel.app/api/lyrics';
   const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+  const RELAY_FAILED = { failed: true }; // timed out or offline: try again rather than saying "no lyrics"
   async function relayLyrics(track) {
-    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 7000);
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 9000);
     try {
       const r = await fetch(RELAY + '?' + new URLSearchParams({ title: track.name,
         artists: track.artists.map(a => a.name).join('|'), duration: Math.round(track.duration_ms / 1000) }), { signal: ctl.signal });
-      const j = r.ok ? await r.json() : null;
-      return j && j.found ? { id: 'ne' + j.id, trackName: j.name, artistName: j.artists.join(', '), duration: j.duration, syncedLyrics: j.lrc } : null;
-    } catch (e) { return null; } finally { clearTimeout(timer); }
+      if (!r.ok) return RELAY_FAILED;
+      const j = await r.json();
+      return j && j.found ? { id: 'ne' + j.id, trackName: j.name, artistName: j.artists.join(', '), duration: j.duration, syncedLyrics: j.lrc, loose: !!j.loose } : null;
+    } catch (e) { return RELAY_FAILED; } finally { clearTimeout(timer); }
   }
   async function fetchLyrics(track) {
     if (lyricCache.has(track.id)) return lyricCache.get(track.id);
@@ -414,6 +425,7 @@
       get('get', { track_name: track.name, artist_name: artists[0], album_name: track.album?.name || '', duration: Math.round(dur) }),
       get('search', { track_name: track.name, artist_name: artists[0] })]);
     let found = [round1[0], ...(round1[1] || [])].filter(Boolean);
+    const loose = []; // same title, other singer: only used for Live tracks when nothing else turns up
     // Round 2, only if nothing lines up yet: the plain title, every artist, and the title alone
     // (artists are often listed under another spelling or script, e.g. 周深 for Zhou Shen).
     const fits = x => x.syncedLyrics && Math.abs(x.duration - dur) <= 3;
@@ -429,13 +441,18 @@
         // A title-only search can turn up a different song with the same name: keep it only if the
         // artist matches or its length is within a few seconds of this track.
         const sameArtist = artistKeys.some(a => a && normLine(x.artistName).includes(a));
-        if (normLine(cleanTitle(x.trackName || '')) === titleKey && (sameArtist || Math.abs(x.duration - dur) <= 3)) found.push(x);
+        if (normLine(cleanTitle(x.trackName || '')) !== titleKey) continue;
+        if (sameArtist || Math.abs(x.duration - dur) <= 3) found.push(x);
+        // Live tracks are often covers (TV shows): the original singer's words are better than nothing.
+        else if (isLive && titleKey.length >= 2) loose.push(x);
       }
     }
     // Nothing on LRCLIB for this exact version: try the relay too (for any song), and add what it finds.
     if (!found.some(fits) && !relay) relay = relayLyrics(track);
-    if (relay) { const ne = await relay; if (ne) found.push(ne); }
-    if (failed && !found.some(fits)) return { error: true }; // don't remember this: try again shortly
+    if (relay) { const ne = await relay; if (ne === RELAY_FAILED) failed = true; else if (ne) (ne.loose ? loose : found).push(ne); }
+    // Couldn't reach a service and have nothing at all: say so and try again shortly. With something
+    // to show, show it, but don't remember it, so the next play of this song looks again.
+    if (failed && !found.some(fits) && !found.length && !loose.length) return { error: true };
     // Every synced file for this version of the song (same length, within 3 s).
     const seen = new Set(), synced = [];
     for (const x of found) {
@@ -455,16 +472,17 @@
       // Nothing with the same length. A file up to 8 s different (often a live take or a different
       // master) is still shown timed, but its start may be off: those songs let you tap the line being
       // sung to line it up (see renderLyrics). Past 8 s the words are shown untimed.
-      found.sort((a, b) => Math.abs(a.duration - dur) - Math.abs(b.duration - dur));
-      const near = found.find(x => x.syncedLyrics && Math.abs(x.duration - dur) < 8);
-      const words = found.find(x => x.plainLyrics || x.syncedLyrics);
+      const byLength = a => [...a].sort((x, y) => Math.abs(x.duration - dur) - Math.abs(y.duration - dur));
+      const pool = [...byLength(found), ...byLength(loose)];
+      const near = pool.find(x => x.syncedLyrics && Math.abs(x.duration - dur) < 8);
+      const words = pool.find(x => x.plainLyrics || x.syncedLyrics);
       res = near ? { synced: nudge(parseLRC(near.syncedLyrics), near), uncertain: true }
         : words ? { plain: (words.plainLyrics || words.syncedLyrics.replace(/\[[^\]]*\]/g, '')).split('\n').map(l => l.trim()),
             note: isLive ? 'Live version: words shown without timing' : 'Words shown without timing' }
         : found.some(x => x.instrumental) ? { instrumental: true }
         : { none: true, live: isLive };
     }
-    lyricCache.set(track.id, res);
+    if (!failed || res.synced) lyricCache.set(track.id, res);
     return res;
   }
 
@@ -990,7 +1008,7 @@
 
   async function seekTo(ms) {
     state.progress = Math.max(0, ms - offset); state.at = performance.now(); follow = true;
-    await spotify('/me/player/seek?position_ms=' + Math.round(state.progress), 'PUT');
+    await command('/me/player/seek?position_ms=' + Math.round(state.progress), 'PUT');
   }
 
   function tick() {
@@ -1117,36 +1135,77 @@
       state.progress = posNow() + drift * 0.35; state.at = now; // ease towards Spotify's clock
     }
   }
+  // A newer version of this page is online: switch to it at the next song change (or while idle).
+  let updateReady = false;
+  async function checkUpdate() {
+    try {
+      const r = await fetch(REDIRECT + '?check=' + Date.now(), { cache: 'no-store' });
+      const m = (await r.text()).match(/const BUILD = '([^']+)'/);
+      if (m && m[1] !== BUILD) updateReady = true;
+    } catch (e) { /* offline: check again later */ }
+  }
+  function reloadForUpdate() { location.replace(REDIRECT + '?v=' + Date.now()); }
   function goIdle() {
+    if (updateReady) return reloadForUpdate();
     state.trackId = null; switchToken++;
     $('title').textContent = 'Nothing playing'; $('artist').textContent = 'Start a song on Spotify';
     $('vibe').classList.add('hidden'); showMsg('Play a song on Spotify and the lyrics will appear here');
   }
 
-  let pollTimer = null, polling = false;
+  let pollTimer = null, polling = false, pollN = 0;
+  let device = null, repeatOne = false, reportedId = null, stuck = 0, lastProgress = -1, stale = null;
+  // Show a song straight away (before Spotify confirms it), starting from the top.
+  function moveTo(t, guardMs = 4000) {
+    skipGuardUntil = performance.now() + guardMs;
+    state.progress = 0; state.at = performance.now(); state.duration = t.duration_ms; stuck = 0;
+    switchTrack(t); if (t === upNext) upNext = null;
+  }
+  async function checkQueue(id, progress) {
+    const q = await spotify('/me/player/queue').catch(() => null);
+    const cur = q && q.currently_playing;
+    if (cur && cur.type === 'track' && cur.id !== id && state.trackId === id) { stale = { id, progress }; moveTo(cur); }
+  }
   async function poll() {
     if (polling) return;
     polling = true; clearTimeout(pollTimer);
     try {
       const token = await accessToken(); // refresh first, so it isn't counted in the round trip
       const t0 = performance.now();
-      const r = await fetch('https://api.spotify.com/v1/me/player/currently-playing', { headers: { Authorization: 'Bearer ' + token } });
+      const r = await fetch('https://api.spotify.com/v1/me/player?n=' + (++pollN), { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
       const t1 = performance.now();
       if (r.status === 401) store.set('expires', '0');
       const d = r.status === 200 ? await r.json() : null;
       const t = d && d.item;
+      if (d) { device = d.device || null; repeatOne = d.repeat_state === 'track'; }
+      if (t) reportedId = t.id;
       if (r.status === 204 || (d && (!t || d.currently_playing_type !== 'track'))) {
         // Spotify briefly says "nothing" between songs and while changing device: wait it out.
         if (++nothingCount >= 4 && (state.trackId !== null || !$('lyrics').querySelector('.msg'))) goIdle();
       } else if (t) {
         nothingCount = 0;
-        // Right after an on-page skip Spotify can still report the old song for a moment: don't bounce back.
+        // Right after a skip Spotify can still report the old song for a moment: don't bounce back.
+        // Same for a song we moved past because Spotify's answer had stopped moving (see below).
         const settling = t.id !== state.trackId && performance.now() < skipGuardUntil;
-        if (!settling) {
+        const stillStale = stale && t.id === stale.id && d.progress_ms <= stale.progress + 1500;
+        if (!settling && !stillStale) {
+          stale = null;
           state.duration = t.duration_ms;
-          if (t.id !== state.trackId) { state.progress = d.progress_ms + (d.is_playing ? (t1 - t0) / 2 : 0);
-            state.at = t1; state.playing = d.is_playing; switchTrack(t); }
-          else syncClock(d.progress_ms, d.is_playing, t1 - t0, t1);
+          if (t.id !== state.trackId) {
+            if (updateReady && state.trackId) { polling = false; return reloadForUpdate(); }
+            state.progress = d.progress_ms + (d.is_playing ? (t1 - t0) / 2 : 0);
+            state.at = t1; state.playing = d.is_playing; stuck = 0; switchTrack(t);
+          } else {
+            syncClock(d.progress_ms, d.is_playing, t1 - t0, t1);
+            // The car's Spotify can be slow to tell Spotify it moved on. Two signs of that:
+            // the same position reported again and again while "playing", or a song that should have
+            // ended a few seconds ago. Then ask the queue what's really on, or move to the next song.
+            stuck = d.is_playing && d.progress_ms === lastProgress ? stuck + 1 : 0;
+            lastProgress = d.progress_ms;
+            if (stuck >= 3) { stuck = 0; checkQueue(t.id, d.progress_ms); }
+            else if (d.is_playing && !repeatOne && upNext && d.progress_ms > t.duration_ms - 1000 && posNow() > t.duration_ms + 2500) {
+              stale = { id: t.id, progress: d.progress_ms }; moveTo(upNext);
+            }
+          }
         }
       }
     } catch (e) { /* network blip (e.g. a tunnel): keep going on our own clock, try again next poll */ }
@@ -1156,23 +1215,46 @@
   // Check with Spotify again soon (after a skip), instead of waiting for the next regular poll.
   const pollSoon = (ms = 350) => { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); };
 
-  // Skip buttons on the page: switch to the prefetched song straight away, then confirm with Spotify.
+  // Commands go to the device that's actually playing (the car), not whichever one Spotify guesses.
+  const onDevice = path => device && device.id ? path + (path.includes('?') ? '&' : '?') + 'device_id=' + device.id : path;
+  async function command(path, method) {
+    try {
+      const r = await fetch('https://api.spotify.com/v1' + onDevice(path), { method, headers: { Authorization: 'Bearer ' + await accessToken() } });
+      if (r.status === 401) store.set('expires', '0');
+      return r.status;
+    } catch (e) { return 0; }
+  }
+  let toastTimer = null;
+  function toast(text) {
+    $('toast').textContent = text; $('toast').classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 5000);
+  }
+  const USE_CAR = 'Use the car’s controls to skip; the lyrics will follow.';
+
+  // Skip buttons on the page: switch to the next song straight away, then make sure the car did too.
   let skipGuardUntil = 0;
-  function skip(dir) {
+  async function skip(dir) {
+    if (device && device.is_restricted) return toast('This car’s Spotify doesn’t take skips from the browser. ' + USE_CAR);
     clearTimeout(pollTimer);
-    spotify(dir > 0 ? '/me/player/next' : '/me/player/previous', 'POST').finally(() => pollSoon());
-    if (dir > 0 && upNext) {
-      skipGuardUntil = performance.now() + 2000;
-      state.progress = 0; state.at = performance.now(); state.duration = upNext.duration_ms;
-      switchTrack(upNext); upNext = null;
+    const from = state.trackId;
+    if (dir > 0 && upNext) moveTo(upNext, 2500);
+    const status = await command(dir > 0 ? '/me/player/next' : '/me/player/previous', 'POST');
+    if (status < 200 || status >= 300) {
+      skipGuardUntil = 0; pollSoon(0); // back to whatever is really playing
+      return toast(status === 0 ? 'No connection right now, try again in a moment.'
+        : status === 404 ? 'Spotify can’t reach the car’s player right now. ' + USE_CAR
+        : 'Spotify didn’t accept the skip. ' + USE_CAR);
     }
+    pollSoon(300);
+    // Spotify said yes, but check the car really moved on.
+    setTimeout(() => { if (from && reportedId === from && dir > 0) { toast('The car didn’t change song. ' + USE_CAR); pollSoon(0); } }, 4000);
   }
 
   function bind() {
     $('smaller').onclick = () => { fs = Math.max(24, fs - 4); applyFs(); };
     $('bigger').onclick = () => { fs = Math.min(96, fs + 4); applyFs(); };
     $('follow').onclick = () => { follow = true; activeIdx = -2; };
-    $('play').onclick = () => { spotify(state.playing ? '/me/player/pause' : '/me/player/play', 'PUT');
+    $('play').onclick = () => { command(state.playing ? '/me/player/pause' : '/me/player/play', 'PUT');
       state.progress += state.playing ? performance.now() - state.at : 0; state.at = performance.now(); state.playing = !state.playing; };
     $('next').onclick = () => skip(1);
     $('prev').onclick = () => skip(-1);
@@ -1233,6 +1315,7 @@
     $('showManual').onclick = e => { e.preventDefault(); $('quickSetup').classList.add('hidden'); $('manualSetup').classList.remove('hidden'); };
     $(isClientId(knownId) ? 'quickSetup' : 'manualSetup').classList.remove('hidden');
 
+    if (q.has('v')) history.replaceState(null, '', REDIRECT); // came from a self-update
     if (q.has('demo')) return startDemo();
     if (q.get('code') && q.get('state') !== store.get('state')) {
       $('setupErr').textContent = 'Login check failed, please tap Connect again.';
@@ -1253,7 +1336,8 @@
     applyFs(); bind();
     poll(); requestAnimationFrame(tick);
     // Coming back to the browser (or the screen waking up): check what's playing straight away.
-    const wake = () => { if (!document.hidden) pollSoon(0); };
+    const wake = () => { if (document.hidden) return; if (updateReady && !state.playing) return reloadForUpdate(); pollSoon(0); checkUpdate(); };
+    checkUpdate(); setInterval(checkUpdate, 10 * 60 * 1000);
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('pageshow', wake);
     window.addEventListener('focus', wake);

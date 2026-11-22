@@ -92,14 +92,29 @@ export default async function handler(req, res) {
     ])];
     const results = (await Promise.all(queries.map(q => search(q, 1).catch(() => [])))).flat();
     const seen = new Set();
-    const ranked = results
-      .filter(s => !seen.has(s.id) && seen.add(s.id))
+    // Backing tracks (伴奏, instrumental) have no words: never use them.
+    const INSTRUMENTAL = /伴奏|纯音乐|純音樂|instrumental|karaoke|off vocal|inst\.?\)/i;
+    const unique = results.filter(s => !seen.has(s.id) && seen.add(s.id) && !INSTRUMENTAL.test(s.name));
+    const ranked = unique
       .map(s => ({ s, sc: score(s, title, wantArtists, artistIds, duration) }))
       .filter(x => x.sc !== null)
       .sort((a, b) => b.sc - a.sc);
 
+    // Live tracks are often covers sung on TV shows, filed on NetEase under the original singer only.
+    // If the performers' own entries have no words, fall back to the same title by anyone (closest
+    // length, covers and remixes last). The page treats these as "words from another recording".
+    const want = norm(plain);
+    const looseList = isLive(title) && want.length >= 2
+      ? unique.filter(s => !ranked.some(x => x.s === s) && [s.name, ...(s.tns || []), ...(s.alia || [])].some(t => norm(cleanTitle(t)) === want))
+        // The best-known version first (most likely the original words), then the closest length.
+        .map(s => ({ s, sc: (s.pop || 0) - Math.min(Math.abs(s.dt / 1000 - duration), 60) * 0.5
+          - (/cover|翻唱|翻自|dj|remix/i.test(s.name) ? 60 : 0) - (/ver\b|版/i.test(s.name) ? 15 : 0) }))
+        .sort((a, b) => b.sc - a.sc)
+      : [];
+
     // Try the best few matches until one has timed lyrics.
-    for (const { s } of ranked.slice(0, 3)) {
+    const tries = [...ranked.slice(0, 3).map(x => ({ ...x, loose: false })), ...looseList.slice(0, 4).map(x => ({ ...x, loose: true }))];
+    for (const { s, loose } of tries) {
       const r = await fetch('https://music.163.com/api/song/lyric?' + new URLSearchParams({ id: s.id, lv: 1, tv: -1 }), { headers: HEADERS });
       if (!r.ok) continue;
       const j = await r.json();
@@ -107,7 +122,7 @@ export default async function handler(req, res) {
       if (!/\[\d+:\d+/.test(raw)) continue;
       const lrc = raw.split('\n').filter(l => !CREDIT.test(l.replace(/\[[^\]]*\]/g, ''))).join('\n');
       res.setHeader('Cache-Control', 'public, s-maxage=604800, stale-while-revalidate=86400');
-      return res.status(200).json({ found: true, id: s.id, name: s.name, artists: s.ar.map(a => a.name), duration: s.dt / 1000, lrc });
+      return res.status(200).json({ found: true, id: s.id, name: s.name, artists: s.ar.map(a => a.name), duration: s.dt / 1000, lrc, loose });
     }
     res.setHeader('Cache-Control', 'public, s-maxage=86400');
     return res.status(200).json({ found: false });
