@@ -125,12 +125,16 @@ export default async function handler(req, res) {
     const timed = TIMINGS.find(x => x.title === want && Math.abs(x.duration - duration) <= 1.5
       && x.artists.some(a => wantArtists.some(w => w === a || w.includes(a) || a.includes(w))));
     if (timed) {
-      const lines = (await lyricText(timed.neteaseId)).split('\n').map(l => l.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean);
+      // Words from NetEase, or from LRCLIB where only it has them (often untimed there).
+      const text = timed.lrclibId
+        ? await fetch('https://lrclib.net/api/get/' + timed.lrclibId).then(r => r.ok ? r.json() : {}).then(j => j.plainLyrics || j.syncedLyrics || '').catch(() => '')
+        : await lyricText(timed.neteaseId).catch(() => '');
+      const lines = text.split('\n').map(l => l.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean);
       if (lines.length === timed.lines) {
         const ts = t => `[${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}]`;
         const lrc = timed.sung.map(([li, t]) => ts(t) + lines[li]).join('\n');
         res.setHeader('Cache-Control', 'public, s-maxage=604800, stale-while-revalidate=86400');
-        return res.status(200).json({ found: true, id: timed.neteaseId, name: title, artists, duration, lrc, exact: true });
+        return res.status(200).json({ found: true, id: timed.neteaseId || 'lrclib' + timed.lrclibId, name: title, artists, duration, lrc, exact: true });
       }
     }
 
@@ -149,6 +153,9 @@ export default async function handler(req, res) {
       .filter(c => /\[\d+:\d+/.test(c.lrc))
       .map(c => ({ ...c, chars: new Set([...toSimp(c.lrc.replace(/\[[^\]]*\]/g, ''))].filter(ch => /\p{L}/u.test(ch))) }));
     const alike = (a, b) => { let n = 0; for (const c of a.chars) if (b.chars.has(c)) n++; return n / Math.max(1, Math.min(a.chars.size, b.chars.size)); };
+    // The singer's own studio version (just a different length from the live take) needs no vote.
+    const own = cands.find(c => c.s.ar.some(a => artistIds.has(a.id)) || wantArtists.some(w => sameArtist(c.s.ar.flatMap(artistKeys), w)));
+    if (own) return send(own.s, own.lrc, true);
     let pick = null, pickScore = 0;
     for (const c of cands) {
       const sims = cands.filter(o => o !== c).map(o => alike(c, o));

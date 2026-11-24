@@ -95,6 +95,20 @@ for (const s of sung) {
   if (out.length && t <= out.at(-1)[1]) continue;
   out.push([s.li, +t.toFixed(2)]);
 }
+// Lines the recogniser missed between two heard lines (a quiet or blurry stretch): place them in
+// order, spread by length, if the pace that gives is plausible for singing.
+const size = li => lineEnd[li] - lineStart[li] + 1;
+for (let k = out.length - 2; k >= 0; k--) {
+  const [a, t] = out[k], [b, u] = out[k + 1];
+  if (b - a < 2 || b - a > 5) continue;
+  const span = []; for (let li = a; li < b; li++) span.push(li);
+  const chars = span.reduce((s, li) => s + size(li), 0), pace = (u - t) / chars;
+  if (pace < 0.2 || pace > 1.0) continue;
+  let at = t; const fill = [];
+  for (const li of span.slice(1)) { at += size(li - 1) * pace; fill.push([li, +at.toFixed(2)]); }
+  out.splice(k + 1, 0, ...fill);
+  if (process.env.DIAG) console.error('filled', fill.map(f => f[0]).join(','), 'between', t, u);
+}
 if (process.env.DIAG) {
   // Per sung line: how much of it was heard; and stretches of singing no line claimed.
   for (const s of sung) console.error('line', s.li, 't', s.t.toFixed(1), 'heard', s.good + '/' + (lineEnd[s.li] - lineStart[s.li] + 1));
