@@ -255,7 +255,7 @@
 (() => {
   // Bumped on every change. The page checks for a newer copy and reloads itself between songs, so the
   // car never keeps running an old version in a tab that stays open for weeks.
-  const BUILD = '2026-11-22.1';
+  const BUILD = '2026-11-24.1';
   const SCOPES = 'user-read-currently-playing user-read-playback-state user-modify-playback-state';
   const REDIRECT = location.origin + location.pathname;
   const $ = id => document.getElementById(id);
@@ -403,7 +403,7 @@
         artists: track.artists.map(a => a.name).join('|'), duration: Math.round(track.duration_ms / 1000) }), { signal: ctl.signal });
       if (!r.ok) return RELAY_FAILED;
       const j = await r.json();
-      return j && j.found ? { id: 'ne' + j.id, trackName: j.name, artistName: j.artists.join(', '), duration: j.duration, syncedLyrics: j.lrc, loose: !!j.loose } : null;
+      return j && j.found ? { id: 'ne' + j.id, trackName: j.name, artistName: j.artists.join(', '), duration: j.duration, syncedLyrics: j.lrc, loose: !!j.loose, exact: !!j.exact } : null;
     } catch (e) { return RELAY_FAILED; } finally { clearTimeout(timer); }
   }
   async function fetchLyrics(track) {
@@ -463,7 +463,7 @@
     // NetEase files run ~0.15 s early on average next to LRCLIB's (measured on 20 songs). When NetEase
     // is the only source, nudge it later; when other files are there, the consensus takes care of it.
     const NE_LATE = 150;
-    const nudge = (ls, x) => x && String(x.id).startsWith('ne') ? ls.map(l => ({ ...l, t: l.t + NE_LATE })) : ls;
+    const nudge = (ls, x) => x && !x.exact && String(x.id).startsWith('ne') ? ls.map(l => ({ ...l, t: l.t + NE_LATE })) : ls;
     let res;
     if (synced.length) {
       const only = synced.length === 1 ? found.find(x => x.syncedLyrics === synced[0]) : null;

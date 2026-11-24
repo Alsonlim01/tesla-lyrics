@@ -8,6 +8,7 @@
 
 import { pinyin } from 'pinyin-pro';
 import { toSimp } from './_t2s.js';
+import { TIMINGS } from './_timings.js';
 
 const ALLOWED = ['https://alsonlim01.github.io', 'http://localhost:8000'];
 const HEADERS = {
@@ -34,6 +35,14 @@ async function search(q, type) {
   if (!r.ok) throw new Error('search ' + r.status);
   const j = await r.json();
   return (type === 100 ? j?.result?.artists : j?.result?.songs) || [];
+}
+
+// A song's timed lyrics (LRC) from NetEase, without the credit lines at the top.
+async function lyricText(id) {
+  const r = await fetch('https://music.163.com/api/song/lyric?' + new URLSearchParams({ id, lv: 1, tv: -1 }), { headers: HEADERS });
+  if (!r.ok) throw new Error('lyric ' + r.status);
+  const raw = (await r.json())?.lrc?.lyric || '';
+  return raw.split('\n').filter(l => !CREDIT.test(l.replace(/\[[^\]]*\]/g, ''))).join('\n');
 }
 
 // Every name an artist goes by on NetEase, plus the pinyin of the Chinese ones.
@@ -112,18 +121,42 @@ export default async function handler(req, res) {
         .sort((a, b) => b.sc - a.sc)
       : [];
 
-    // Try the best few matches until one has timed lyrics.
-    const tries = [...ranked.slice(0, 3).map(x => ({ ...x, loose: false })), ...looseList.slice(0, 4).map(x => ({ ...x, loose: true }))];
-    for (const { s, loose } of tries) {
-      const r = await fetch('https://music.163.com/api/song/lyric?' + new URLSearchParams({ id: s.id, lv: 1, tv: -1 }), { headers: HEADERS });
-      if (!r.ok) continue;
-      const j = await r.json();
-      const raw = j?.lrc?.lyric || '';
-      if (!/\[\d+:\d+/.test(raw)) continue;
-      const lrc = raw.split('\n').filter(l => !CREDIT.test(l.replace(/\[[^\]]*\]/g, ''))).join('\n');
+    // Recordings we've timed by hand (tools/align.mjs): NetEase's words with our line times.
+    const timed = TIMINGS.find(x => x.title === want && Math.abs(x.duration - duration) <= 1.5
+      && x.artists.some(a => wantArtists.some(w => w === a || w.includes(a) || a.includes(w))));
+    if (timed) {
+      const lines = (await lyricText(timed.neteaseId)).split('\n').map(l => l.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean);
+      if (lines.length === timed.lines) {
+        const ts = t => `[${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}]`;
+        const lrc = timed.sung.map(([li, t]) => ts(t) + lines[li]).join('\n');
+        res.setHeader('Cache-Control', 'public, s-maxage=604800, stale-while-revalidate=86400');
+        return res.status(200).json({ found: true, id: timed.neteaseId, name: title, artists, duration, lrc, exact: true });
+      }
+    }
+
+    const send = (s, lrc, loose) => {
       res.setHeader('Cache-Control', 'public, s-maxage=604800, stale-while-revalidate=86400');
       return res.status(200).json({ found: true, id: s.id, name: s.name, artists: s.ar.map(a => a.name), duration: s.dt / 1000, lrc, loose });
+    };
+    // Try the best few matches until one has timed lyrics.
+    for (const { s } of ranked.slice(0, 3)) {
+      const lrc = await lyricText(s.id).catch(() => '');
+      if (/\[\d+:\d+/.test(lrc)) return send(s, lrc, false);
     }
+    // Same title by other singers: many different songs share a title, so take the words that most
+    // uploads agree on, and only if at least two of them do.
+    const cands = (await Promise.all(looseList.slice(0, 6).map(async x => ({ s: x.s, lrc: await lyricText(x.s.id).catch(() => '') }))))
+      .filter(c => /\[\d+:\d+/.test(c.lrc))
+      .map(c => ({ ...c, chars: new Set([...toSimp(c.lrc.replace(/\[[^\]]*\]/g, ''))].filter(ch => /\p{L}/u.test(ch))) }));
+    const alike = (a, b) => { let n = 0; for (const c of a.chars) if (b.chars.has(c)) n++; return n / Math.max(1, Math.min(a.chars.size, b.chars.size)); };
+    let pick = null, pickScore = 0;
+    for (const c of cands) {
+      const sims = cands.filter(o => o !== c).map(o => alike(c, o));
+      // Uploads of the same song share ~40-65% of their characters, unrelated songs ~20%.
+      const agree = sims.filter(v => v > 0.35).length, score = sims.filter(v => v > 0.35).reduce((a, b) => a + b, 0);
+      if (agree >= 1 && score > pickScore) { pick = c; pickScore = score; }
+    }
+    if (pick) return send(pick.s, pick.lrc, true);
     res.setHeader('Cache-Control', 'public, s-maxage=86400');
     return res.status(200).json({ found: false });
   } catch (e) {
